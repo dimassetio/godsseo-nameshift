@@ -3,7 +3,7 @@
 Panduan ini menggunakan arsitektur hemat biaya untuk satu server:
 
 - AWS EC2 dengan Ubuntu Server 24.04 LTS.
-- Nginx dan PHP 8.3 FPM.
+- Nginx dan PHP 8.5 FPM.
 - MySQL, aplikasi, queue worker, dan scheduler berjalan pada EC2 yang sama.
 - Supervisor menjaga queue worker tetap aktif.
 - Certbot menyediakan HTTPS langsung untuk public IPv4 tanpa domain.
@@ -124,7 +124,7 @@ Pastikan baris swap belum ada di `/etc/fstab` sebelum menjalankan `tee` lagi.
 
 ```bash
 sudo apt install -y nginx mysql-server git unzip curl supervisor
-sudo apt install -y php8.3-fpm php8.3-cli php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-bcmath php8.3-intl
+sudo apt install -y php8.5-fpm php8.5-cli php8.5-mysql php8.5-curl php8.5-mbstring php8.5-xml php8.5-zip php8.5-bcmath php8.5-intl
 sudo apt install -y composer nodejs npm
 ```
 
@@ -144,11 +144,11 @@ Aktifkan service:
 
 ```bash
 sudo systemctl enable nginx
-sudo systemctl enable php8.3-fpm
+sudo systemctl enable php8.5-fpm
 sudo systemctl enable mysql
 sudo systemctl enable supervisor
 sudo systemctl start nginx
-sudo systemctl start php8.3-fpm
+sudo systemctl start php8.5-fpm
 sudo systemctl start mysql
 sudo systemctl start supervisor
 ```
@@ -199,7 +199,7 @@ Masukkan password ketika diminta, lalu jalankan `EXIT;`.
 ```bash
 sudo mkdir -p /var/www/nameshift
 sudo chown ubuntu:www-data /var/www/nameshift
-git clone REPOSITORY_URL /var/www/nameshift
+git clone https://github.com/dimassetio/godsseo-nameshift.git /var/www/nameshift
 cd /var/www/nameshift
 ```
 
@@ -298,19 +298,22 @@ sudo chmod 640 /var/www/nameshift/.env
 
 ```bash
 cd /var/www/nameshift
-php artisan migrate --force
 sudo chown -R ubuntu:www-data /var/www/nameshift
 sudo chown -R www-data:www-data /var/www/nameshift/storage /var/www/nameshift/bootstrap/cache
 sudo chmod -R ug+rwx /var/www/nameshift/storage /var/www/nameshift/bootstrap/cache
-php artisan optimize
+sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan migrate --force
+sudo -u www-data php artisan optimize
 ```
+
+Artisan production dijalankan sebagai `www-data`, yaitu user yang sama dengan PHP-FPM dan queue worker. Ini mencegah file log atau cache dibuat dengan owner yang tidak dapat ditulis oleh proses web.
 
 Periksa aplikasi:
 
 ```bash
-php artisan about
-php artisan migrate:status
-php artisan schedule:list
+sudo -u www-data php artisan about
+sudo -u www-data php artisan migrate:status
+sudo -u www-data php artisan schedule:list
 ```
 
 ## 14. Konfigurasi Nginx
@@ -348,7 +351,7 @@ server {
     error_page 404 /index.php;
 
     location ~ ^/index\.php(/|$) {
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
@@ -422,7 +425,7 @@ Perintah pemeriksaan queue:
 
 ```bash
 cd /var/www/nameshift
-php artisan queue:failed
+sudo -u www-data php artisan queue:failed
 sudo tail -f storage/logs/worker.log
 ```
 
@@ -445,7 +448,7 @@ Pastikan terpasang:
 ```bash
 sudo crontab -u www-data -l
 cd /var/www/nameshift
-php artisan schedule:list
+sudo -u www-data php artisan schedule:list
 ```
 
 ## 17. Verifikasi akses melalui public IP
@@ -535,7 +538,7 @@ server {
     error_page 404 /index.php;
 
     location ~ ^/index\.php(/|$) {
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
@@ -593,8 +596,8 @@ Setelah mengubah `.env`:
 
 ```bash
 cd /var/www/nameshift
-php artisan optimize:clear
-php artisan optimize
+sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan optimize
 sudo supervisorctl restart nameshift-worker:*
 ```
 
@@ -622,13 +625,13 @@ Jalankan:
 
 ```bash
 cd /var/www/nameshift
-php artisan about
-php artisan migrate:status
-php artisan schedule:list
+sudo -u www-data php artisan about
+sudo -u www-data php artisan migrate:status
+sudo -u www-data php artisan schedule:list
 sudo supervisorctl status
 sudo nginx -t
 sudo systemctl status nginx --no-pager
-sudo systemctl status php8.3-fpm --no-pager
+sudo systemctl status php8.5-fpm --no-pager
 sudo systemctl status mysql --no-pager
 curl -I https://PUBLIC_IP_EC2/up
 ```
@@ -648,17 +651,17 @@ Backup terlebih dahulu, lalu:
 
 ```bash
 cd /var/www/nameshift
-php artisan down
+sudo -u www-data php artisan down
 git pull --ff-only
 composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 npm ci
 npm run build
-php artisan migrate --force
-php artisan optimize:clear
-php artisan optimize
-php artisan queue:restart
+sudo -u www-data php artisan migrate --force
+sudo -u www-data php artisan optimize:clear
+sudo -u www-data php artisan optimize
+sudo -u www-data php artisan queue:restart
 sudo supervisorctl restart nameshift-worker:*
-php artisan up
+sudo -u www-data php artisan up
 ```
 
 Jika `git pull`, Composer, atau npm gagal, jangan menjalankan migrasi sampai penyebabnya diperbaiki.
@@ -683,7 +686,7 @@ Untuk production jangka panjang, gunakan snapshot EBS terjadwal atau AWS Backup.
 ### Halaman `502 Bad Gateway`
 
 ```bash
-sudo systemctl status php8.3-fpm --no-pager
+sudo systemctl status php8.5-fpm --no-pager
 ls -la /run/php/
 sudo tail -n 100 /var/log/nginx/error.log
 ```
@@ -695,7 +698,7 @@ Pastikan socket pada konfigurasi Nginx sama dengan socket PHP-FPM yang tersedia.
 ```bash
 cd /var/www/nameshift
 tail -n 100 storage/logs/laravel.log
-php artisan about
+sudo -u www-data php artisan about
 ```
 
 Periksa `APP_KEY`, koneksi database, permission `storage`, dan `bootstrap/cache`.
@@ -706,7 +709,7 @@ Periksa `APP_KEY`, koneksi database, permission `storage`, dan `bootstrap/cache`
 sudo supervisorctl status
 sudo supervisorctl restart nameshift-worker:*
 cd /var/www/nameshift
-php artisan queue:failed
+sudo -u www-data php artisan queue:failed
 tail -n 100 storage/logs/worker.log
 tail -n 100 storage/logs/laravel.log
 ```
@@ -720,12 +723,12 @@ cd /var/www/nameshift
 npm ci
 npm run build
 ls -la public/build
-php artisan optimize:clear
+sudo -u www-data php artisan optimize:clear
 ```
 
 ### Upload Excel ditolak
 
-Nginx pada panduan ini menerima maksimal 10 MB. Jika PHP masih menolak file, edit `/etc/php/8.3/fpm/php.ini`:
+Nginx pada panduan ini menerima maksimal 10 MB. Jika PHP masih menolak file, edit `/etc/php/8.5/fpm/php.ini`:
 
 ```ini
 upload_max_filesize = 10M
@@ -735,7 +738,7 @@ post_max_size = 12M
 Kemudian:
 
 ```bash
-sudo systemctl restart php8.3-fpm
+sudo systemctl restart php8.5-fpm
 sudo systemctl reload nginx
 ```
 
