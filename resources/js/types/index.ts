@@ -46,13 +46,13 @@ export interface Paginated<T> {
 
 export interface RegistrarAccount {
     id: number;
-    provider: 'NAMECHEAP' | 'NAMECOM';
+    provider: 'NAMECHEAP' | 'NAMECOM' | 'ZCOM';
     environment: 'SANDBOX' | 'PRODUCTION';
     label: string;
     username: string;
     api_user: string | null;
     client_ipv4: string | null;
-    secret?: string;
+    has_credentials?: boolean;
     is_active: boolean;
     last_test_status: string | null;
     last_test_message: string | null;

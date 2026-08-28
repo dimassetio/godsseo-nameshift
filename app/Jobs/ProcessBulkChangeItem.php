@@ -26,7 +26,7 @@ class ProcessBulkChangeItem implements ShouldQueue
 
     public int $tries = 50;
 
-    public int $timeout = 60;
+    public int $timeout = 240;
 
     public function __construct(public int $itemId)
     {
@@ -43,7 +43,10 @@ class ProcessBulkChangeItem implements ShouldQueue
         return [
             new RateLimited('registrar-api'),
             (new WithoutOverlapping('domain-mutation-'.$item->domain_id))->expireAfter(90),
-            (new WithoutOverlapping('registrar-account-'.$item->domain->registrar_account_id))->releaseAfter(2)->expireAfter(90),
+            (new WithoutOverlapping('registrar-account-'.$item->domain->registrar_account_id))
+                ->shared()
+                ->releaseAfter(2)
+                ->expireAfter(300),
         ];
     }
 

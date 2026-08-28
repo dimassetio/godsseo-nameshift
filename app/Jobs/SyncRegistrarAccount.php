@@ -21,7 +21,7 @@ class SyncRegistrarAccount implements ShouldQueue
 
     public int $tries = 3;
 
-    public int $timeout = 900;
+    public int $timeout = 1800;
 
     public function __construct(public int $syncRunId)
     {
@@ -32,7 +32,11 @@ class SyncRegistrarAccount implements ShouldQueue
     {
         $run = SyncRun::find($this->syncRunId);
 
-        return $run ? [(new WithoutOverlapping('sync-account-'.$run->registrar_account_id))->expireAfter(1200)] : [];
+        return $run ? [
+            (new WithoutOverlapping('registrar-account-'.$run->registrar_account_id))
+                ->shared()
+                ->expireAfter(2100),
+        ] : [];
     }
 
     public function backoff(): array

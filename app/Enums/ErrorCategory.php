@@ -14,6 +14,8 @@ enum ErrorCategory: string
     case Network = 'NETWORK';
     case ProviderTemporary = 'PROVIDER_TEMPORARY';
     case ProviderPermanent = 'PROVIDER_PERMANENT';
+    case ActionRequired = 'ACTION_REQUIRED';
+    case ProviderChanged = 'PROVIDER_CHANGED';
     case Unknown = 'UNKNOWN';
 
     public function retryable(): bool

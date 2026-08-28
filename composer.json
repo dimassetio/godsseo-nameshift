@@ -57,7 +57,7 @@
         ],
         "dev": [
             "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve\" \"php artisan queue:listen --queue=registrar-mutations,registrar-sync,default --tries=50\" \"php artisan pail --timeout=0\" \"npm run dev -- --host=127.0.0.1\" --names=server,queue,logs,vite"
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve\" \"php artisan queue:listen --queue=registrar-browser,registrar-mutations,registrar-sync,default --tries=50\" \"php artisan pail --timeout=0\" \"npm run dev -- --host=127.0.0.1\" --names=server,queue,logs,vite"
         ]
     },
     "extra": {

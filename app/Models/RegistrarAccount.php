@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\RegistrarConnectionStatus;
 use App\Enums\RegistrarEnvironment;
 use App\Enums\RegistrarProvider;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -24,6 +25,7 @@ class RegistrarAccount extends Model
         return [
             'provider' => RegistrarProvider::class,
             'environment' => RegistrarEnvironment::class,
+            'last_test_status' => RegistrarConnectionStatus::class,
             'credentials' => 'encrypted:array',
             'is_active' => 'boolean',
             'last_tested_at' => 'datetime',

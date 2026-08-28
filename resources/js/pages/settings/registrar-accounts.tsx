@@ -14,7 +14,7 @@ import { Eye, EyeOff, Plus } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 
 type AccountFormData = {
-    provider: 'NAMECHEAP' | 'NAMECOM';
+    provider: 'NAMECHEAP' | 'NAMECOM' | 'ZCOM';
     environment: 'SANDBOX' | 'PRODUCTION';
     label: string;
     username: string;
@@ -34,16 +34,20 @@ const empty: AccountFormData = {
     is_active: true,
 };
 
-export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAccount[] }) {
+export default function RegistrarAccounts({ accounts, zcomEnabled }: { accounts: RegistrarAccount[]; zcomEnabled: boolean }) {
     const [visibleAccounts, setVisibleAccounts] = useState(accounts);
     const [pollMessage, setPollMessage] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
-    const hasActiveSync = visibleAccounts.some((account) => account.sync_runs?.some((run) => ['QUEUED', 'RUNNING'].includes(run.status)));
+    const hasActiveWork = visibleAccounts.some(
+        (account) =>
+            ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '') ||
+            account.sync_runs?.some((run) => ['QUEUED', 'RUNNING'].includes(run.status)),
+    );
 
     useEffect(() => setVisibleAccounts(accounts), [accounts]);
 
     useEffect(() => {
-        if (!hasActiveSync) return;
+        if (!hasActiveWork) return;
 
         let cancelled = false;
         let timer: number | undefined;
@@ -61,19 +65,18 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
 
                 const payload = (await response.json()) as { accounts: RegistrarAccount[] };
                 if (cancelled) return;
-                setVisibleAccounts((currentAccounts) =>
-                    payload.accounts.map((account) => ({
-                        ...account,
-                        secret: currentAccounts.find((currentAccount) => currentAccount.id === account.id)?.secret,
-                    })),
-                );
+                setVisibleAccounts(payload.accounts);
                 setPollMessage(null);
 
-                const stillActive = payload.accounts.some((account) => account.sync_runs?.some((run) => ['QUEUED', 'RUNNING'].includes(run.status)));
-                if (stillActive && attempts < 120) {
+                const stillActive = payload.accounts.some(
+                    (account) =>
+                        ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '') ||
+                        account.sync_runs?.some((run) => ['QUEUED', 'RUNNING'].includes(run.status)),
+                );
+                if (stillActive && attempts < 420) {
                     timer = window.setTimeout(poll, 5000);
                 } else if (stillActive) {
-                    setPollMessage('Automatic status updates stopped after 10 minutes. Refresh the page to check this run.');
+                    setPollMessage('Automatic status updates stopped after 35 minutes. Refresh the page to check this run.');
                 }
             } catch (error) {
                 if (!cancelled && !(error instanceof DOMException && error.name === 'AbortError')) {
@@ -89,7 +92,7 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
             controller.abort();
             if (timer) window.clearTimeout(timer);
         };
-    }, [hasActiveSync]);
+    }, [hasActiveWork]);
 
     return (
         <AppLayout
@@ -104,7 +107,7 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
                     <div className="flex flex-wrap items-start justify-between gap-4">
                         <HeadingSmall
                             title="Registrar accounts"
-                            description="Credentials are encrypted at rest. Use the visibility toggle to review them."
+                            description="Credentials and Z.com browser sessions are encrypted at rest and are never shown again."
                         />
                         <Button onClick={() => setCreating(true)}>
                             <Plus className="size-4" />
@@ -112,10 +115,16 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
                         </Button>
                     </div>
                     {pollMessage && <p className="text-sm text-amber-600 dark:text-amber-400">{pollMessage}</p>}
-                    <AccountDialog open={creating} onOpenChange={setCreating} title="Add registrar account" initial={empty} />
+                    <AccountDialog
+                        open={creating}
+                        onOpenChange={setCreating}
+                        title="Add registrar account"
+                        initial={empty}
+                        zcomEnabled={zcomEnabled}
+                    />
                     <div className="space-y-4">
                         {visibleAccounts.map((account) => (
-                            <AccountCard account={account} key={account.id} />
+                            <AccountCard account={account} zcomEnabled={zcomEnabled} key={account.id} />
                         ))}
                     </div>
                 </div>
@@ -124,10 +133,11 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
     );
 }
 
-function AccountCard({ account }: { account: RegistrarAccount }) {
+function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcomEnabled: boolean }) {
     const [editing, setEditing] = useState(false);
     const lastRun = account.sync_runs?.[0];
     const syncActive = lastRun && ['QUEUED', 'RUNNING'].includes(lastRun.status);
+    const testActive = ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '');
     return (
         <Card>
             <CardHeader className="flex-row items-start justify-between gap-3">
@@ -151,9 +161,8 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                         <span className="text-muted-foreground">Last sync:</span>{' '}
                         {account.last_synced_at ? new Date(account.last_synced_at).toLocaleString() : 'Never'}
                     </div>
-                    <div className="space-y-2 md:col-span-2">
-                        <Label>{account.provider === 'NAMECHEAP' ? 'API key' : 'API token'}</Label>
-                        <SecretInput value={account.secret ?? ''} readOnly />
+                    <div>
+                        <span className="text-muted-foreground">Credential:</span> {account.has_credentials ? 'Saved securely' : 'Missing'}
                     </div>
                     {lastRun && (
                         <div className="md:col-span-2">
@@ -162,10 +171,25 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                         </div>
                     )}
                     {lastRun?.error_message && <p className="text-destructive md:col-span-2">{lastRun.error_message}</p>}
+                    {account.last_test_message && (
+                        <p
+                            className={
+                                account.last_test_status === 'ACTION_REQUIRED'
+                                    ? 'text-amber-600 md:col-span-2 dark:text-amber-400'
+                                    : 'text-muted-foreground md:col-span-2'
+                            }
+                        >
+                            {account.last_test_message}
+                        </p>
+                    )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                    <Button size="sm" onClick={() => router.post(`/settings/registrar-accounts/${account.id}/test`)}>
-                        Test connection
+                    <Button
+                        size="sm"
+                        disabled={testActive || Boolean(syncActive)}
+                        onClick={() => router.post(`/settings/registrar-accounts/${account.id}/test`)}
+                    >
+                        {testActive ? 'Testing…' : 'Test connection'}
                     </Button>
                     <Button
                         size="sm"
@@ -184,6 +208,8 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                     onOpenChange={setEditing}
                     title="Edit registrar account"
                     accountId={account.id}
+                    hasCredential={account.has_credentials}
+                    zcomEnabled={zcomEnabled}
                     initial={{
                         provider: account.provider,
                         environment: account.environment,
@@ -191,7 +217,7 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                         username: account.username,
                         api_user: account.api_user ?? '',
                         client_ipv4: account.client_ipv4 ?? '',
-                        secret: account.secret ?? '',
+                        secret: '',
                         is_active: account.is_active,
                     }}
                 />
@@ -206,12 +232,16 @@ function AccountDialog({
     title,
     initial,
     accountId,
+    hasCredential,
+    zcomEnabled,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     title: string;
     initial: AccountFormData;
     accountId?: number;
+    hasCredential?: boolean;
+    zcomEnabled: boolean;
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -220,13 +250,31 @@ function AccountDialog({
                     <DialogTitle>{title}</DialogTitle>
                     <DialogDescription>Configure the registrar account and its encrypted credential.</DialogDescription>
                 </DialogHeader>
-                <AccountEditor initial={initial} accountId={accountId} onSaved={() => onOpenChange(false)} />
+                <AccountEditor
+                    initial={initial}
+                    accountId={accountId}
+                    hasCredential={hasCredential}
+                    zcomEnabled={zcomEnabled}
+                    onSaved={() => onOpenChange(false)}
+                />
             </DialogContent>
         </Dialog>
     );
 }
 
-function AccountEditor({ initial, accountId, onSaved }: { initial: AccountFormData; accountId?: number; onSaved: () => void }) {
+function AccountEditor({
+    initial,
+    accountId,
+    hasCredential = false,
+    zcomEnabled,
+    onSaved,
+}: {
+    initial: AccountFormData;
+    accountId?: number;
+    hasCredential?: boolean;
+    zcomEnabled: boolean;
+    onSaved: () => void;
+}) {
     const form = useForm<AccountFormData>(initial);
     const submit = (e: FormEvent) => {
         e.preventDefault();
@@ -249,24 +297,36 @@ function AccountEditor({ initial, accountId, onSaved }: { initial: AccountFormDa
                     <select
                         className="bg-background h-10 rounded-md border px-3"
                         value={form.data.provider}
-                        onChange={(e) => form.setData('provider', e.target.value as AccountFormData['provider'])}
+                        disabled={Boolean(accountId)}
+                        onChange={(e) => {
+                            const provider = e.target.value as AccountFormData['provider'];
+                            form.setData('provider', provider);
+                            if (provider === 'ZCOM') form.setData('environment', 'PRODUCTION');
+                        }}
                     >
                         <option value="NAMECHEAP">Namecheap</option>
                         <option value="NAMECOM">Name.com</option>
+                        {(zcomEnabled || form.data.provider === 'ZCOM') && <option value="ZCOM">Z.com</option>}
                     </select>
                 </Field>
                 <Field label="Environment">
                     <select
                         className="bg-background h-10 rounded-md border px-3"
                         value={form.data.environment}
+                        disabled={form.data.provider === 'ZCOM'}
                         onChange={(e) => form.setData('environment', e.target.value as AccountFormData['environment'])}
                     >
                         <option value="SANDBOX">Sandbox</option>
                         <option value="PRODUCTION">Production</option>
                     </select>
                 </Field>
-                <Field label="Account username">
-                    <Input value={form.data.username} onChange={(e) => form.setData('username', e.target.value)} required />
+                <Field label={form.data.provider === 'ZCOM' ? 'Account email' : 'Account username'}>
+                    <Input
+                        type={form.data.provider === 'ZCOM' ? 'email' : 'text'}
+                        value={form.data.username}
+                        onChange={(e) => form.setData('username', e.target.value)}
+                        required
+                    />
                 </Field>
                 {form.data.provider === 'NAMECHEAP' && (
                     <>
@@ -282,13 +342,14 @@ function AccountEditor({ initial, accountId, onSaved }: { initial: AccountFormDa
                         </Field>
                     </>
                 )}
-                <Field label={form.data.provider === 'NAMECHEAP' ? 'API key' : 'API token'}>
+                <Field label={form.data.provider === 'NAMECHEAP' ? 'API key' : form.data.provider === 'NAMECOM' ? 'API token' : 'Password'}>
                     <SecretInput
                         name={`registrar-secret-${accountId ?? 'new'}`}
                         autoComplete="new-password"
                         value={form.data.secret}
                         onChange={(value) => form.setData('secret', value)}
                         required={!accountId}
+                        placeholder={accountId && hasCredential ? 'Leave blank to keep the saved credential' : undefined}
                     />
                 </Field>
                 <label className="flex items-center gap-2 self-end pb-2">
@@ -313,6 +374,7 @@ function SecretInput({
     required = false,
     name,
     autoComplete,
+    placeholder,
 }: {
     value: string;
     onChange?: (value: string) => void;
@@ -320,6 +382,7 @@ function SecretInput({
     required?: boolean;
     name?: string;
     autoComplete?: string;
+    placeholder?: string;
 }) {
     const [visible, setVisible] = useState(false);
 
@@ -334,6 +397,7 @@ function SecretInput({
                 onChange={(event) => onChange?.(event.target.value)}
                 readOnly={readOnly}
                 required={required}
+                placeholder={placeholder}
             />
             <Button
                 type="button"

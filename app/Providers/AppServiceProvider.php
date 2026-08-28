@@ -31,9 +31,11 @@ class AppServiceProvider extends ServiceProvider
 
             $key = strtolower($item->domain->account->provider->value).':'.$item->domain->registrar_account_id;
 
-            return $item->domain->account->provider->value === 'NAMECOM'
-                ? [Limit::perSecond(15)->by($key), Limit::perHour(2800)->by($key)]
-                : Limit::perSecond(5)->by($key);
+            return match ($item->domain->account->provider->value) {
+                'NAMECOM' => [Limit::perSecond(15)->by($key), Limit::perHour(2800)->by($key)],
+                'ZCOM' => Limit::perMinute(10)->by($key),
+                default => Limit::perSecond(5)->by($key),
+            };
         });
     }
 }

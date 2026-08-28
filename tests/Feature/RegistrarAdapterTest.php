@@ -3,8 +3,12 @@
 use App\Enums\RegistrarEnvironment;
 use App\Enums\RegistrarProvider;
 use App\Models\RegistrarAccount;
+use App\Registrars\Browser\BrowserResult;
+use App\Registrars\Browser\PlaywrightRunner;
 use App\Registrars\NamecheapRegistrar;
 use App\Registrars\NameComRegistrar;
+use App\Registrars\RegistrarFactory;
+use App\Registrars\ZComRegistrar;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
@@ -38,4 +42,58 @@ test('namecheap connection test uses the documented minimum page size', function
 
     expect((new NamecheapRegistrar($account))->testConnection()->successful)->toBeTrue();
     Http::assertSent(fn (Request $request) => $request->data()['Page'] === 1 && $request->data()['PageSize'] === 10);
+});
+
+test('zcom adapter maps browser results and persists refreshed session state', function () {
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::ZCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Z.com',
+        'username' => 'owner@example.com',
+        'credentials' => ['password' => 'password'],
+        'is_active' => true,
+    ]);
+    $runner = Mockery::mock(PlaywrightRunner::class);
+    $runner->shouldReceive('run')->once()->with('list_domains', $account, ['page' => 1])->andReturn(new BrowserResult([
+        'domains' => [[
+            'name' => 'Example.COM',
+            'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
+            'status' => 'ACTIVE',
+        ]],
+        'next_page' => null,
+    ], ['cookies' => [['name' => 'session']]]));
+    $runner->shouldReceive('run')->once()->with('get_nameservers', $account, ['domain' => 'example.com'])->andReturn(new BrowserResult([
+        'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
+    ]));
+    $runner->shouldReceive('run')->once()->with('set_nameservers', $account, [
+        'domain' => 'example.com',
+        'nameservers' => ['ns3.example.com', 'ns4.example.com'],
+    ])->andReturn(new BrowserResult(['accepted' => true]));
+    $registrar = new ZComRegistrar($account, $runner);
+
+    $page = $registrar->listDomains();
+    $nameservers = $registrar->getNameservers('Example.COM.');
+    $change = $registrar->setNameservers('Example.COM.', ['NS3.EXAMPLE.COM.', 'ns4.example.com']);
+
+    expect($page->domains[0]->name)->toBe('example.com')
+        ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($change->accepted)->toBeTrue()
+        ->and($account->fresh()->credentials)->toBe([
+            'password' => 'password',
+            'storage_state' => ['cookies' => [['name' => 'session']]],
+        ]);
+});
+
+test('registrar factory resolves the zcom adapter', function () {
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::ZCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Z.com Factory',
+        'username' => 'owner@example.com',
+        'credentials' => ['password' => 'password'],
+        'is_active' => true,
+    ]);
+
+    expect(app(RegistrarFactory::class)->for($account))->toBeInstanceOf(ZComRegistrar::class);
 });
