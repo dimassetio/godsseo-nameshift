@@ -56,15 +56,46 @@ test('bulk mutation jobs support Laravel batches', function () {
     expect(class_uses_recursive(ProcessBulkChangeItem::class))->toHaveKey(Batchable::class);
 });
 
-test('the Excel template downloads with the required columns', function () {
+test('the Excel template contains current domains and nameservers matching the active filters', function () {
     $user = User::factory()->create();
-    $response = $this->actingAs($user)->get('/bulk-changes/template');
+    $matching = bulkDomain([
+        'name' => 'matching-active.example.com',
+        'nameservers' => ['current1.example.com', 'current2.example.com'],
+        'remote_status' => 'ACTIVE',
+    ]);
+    Domain::create([
+        'registrar_account_id' => $matching->registrar_account_id,
+        'name' => 'matching-expired.example.com',
+        'nameservers' => ['expired1.example.com', 'expired2.example.com'],
+        'remote_status' => 'EXPIRED',
+        'inventory_status' => InventoryStatus::Available,
+    ]);
+    Domain::create([
+        'registrar_account_id' => $matching->registrar_account_id,
+        'name' => 'ignored-active.example.com',
+        'nameservers' => ['ignored1.example.com', 'ignored2.example.com'],
+        'remote_status' => 'ACTIVE',
+        'inventory_status' => InventoryStatus::Available,
+    ]);
+    bulkDomain([
+        'name' => 'matching-other-account.example.com',
+        'nameservers' => ['other1.example.com', 'other2.example.com'],
+        'remote_status' => 'ACTIVE',
+    ]);
 
-    $response->assertOk()->assertHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    $response = $this->actingAs($user)->get('/bulk-changes/template?search=matching&account='.$matching->registrar_account_id.'&status=ACTIVE');
+
+    $response
+        ->assertOk()
+        ->assertDownload('nameshift-bulk-nameserver-template.xlsx')
+        ->assertHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     $records = app(BulkNameserverSpreadsheet::class)->read(
-        UploadedFile::fake()->createWithContent('bulk.xlsx', nameserverWorkbook([['example.com', 'ns1.example.com', 'ns2.example.com']])),
+        UploadedFile::fake()->createWithContent('bulk.xlsx', $response->getContent()),
     );
-    expect($records)->toBe([['domain' => 'example.com', 'nameservers' => ['ns1.example.com', 'ns2.example.com']]]);
+    expect($records)->toBe([[
+        'domain' => 'matching-active.example.com',
+        'nameservers' => ['current1.example.com', 'current2.example.com'],
+    ]]);
 });
 
 test('Excel import includes only listed domains and supports per-domain targets', function () {

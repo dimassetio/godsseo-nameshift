@@ -74,6 +74,42 @@ export async function extractNameservers(page) {
     return normalizeNameservers(values);
 }
 
+export async function extractDomainMetadata(page) {
+    const text = await page.locator('body').innerText().catch(() => '');
+    const readDate = (labels) => {
+        const match = text.match(
+            new RegExp(`(?:${labels})\\s*(?:date)?\\s*[:\\-]?\\s*([A-Za-z]{3,9}\\s+\\d{1,2},?\\s+\\d{4}|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})`, 'i'),
+        );
+
+        return match?.[1] ?? null;
+    };
+    const readBoolean = async (selectors, labels) => {
+        for (const selector of selectors) {
+            const input = page.locator(selector).first();
+            if ((await input.count()) > 0) {
+                return await input.isChecked().catch(() => null);
+            }
+        }
+
+        const match = text.match(new RegExp(`(?:${labels})\\s*[:\\-]?\\s*(enabled|active|yes|on|disabled|inactive|no|off)`, 'i'));
+        if (!match) {
+            return null;
+        }
+
+        return /^(enabled|active|yes|on)$/i.test(match[1]);
+    };
+    const renewalMatch = text.match(/renewal(?:\s+(?:price|cost))?\s*[:\-]?\s*(?:USD\s*)?\$\s*([\d,.]+)/i);
+
+    return {
+        renewal_price: renewalMatch ? Number(renewalMatch[1].replaceAll(',', '')) : null,
+        registered_at: readDate('registration|registered|creation|created'),
+        expires_at: readDate('expiry|expiration|expires|due'),
+        is_locked: await readBoolean(['input[name*="lock" i]'], 'registrar lock|domain lock|locked'),
+        privacy_enabled: await readBoolean(['input[name*="privacy" i]', 'input[name*="idprotect" i]'], 'privacy|id protection|whois protection'),
+        auto_renew: await readBoolean(['input[name*="autorenew" i]', 'input[name*="auto_renew" i]'], 'auto[ -]?renew'),
+    };
+}
+
 async function firstVisible(page, selectors) {
     for (const selector of selectors) {
         const locator = page.locator(selector);
@@ -286,10 +322,12 @@ async function listDomains(page, input) {
 
     for (const record of links) {
         await openNameserverPanel(page, record.href);
+        const metadata = await extractDomainMetadata(page);
         domains.push({
             name: record.name,
             nameservers: await extractNameservers(page),
             status: record.status,
+            ...metadata,
         });
     }
 

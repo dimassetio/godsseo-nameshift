@@ -69,10 +69,28 @@ class SyncRegistrarAccount implements ShouldQueue
                     $domain->fill([
                         'nameservers' => $remote->nameservers,
                         'remote_status' => $remote->status,
+                        'tld' => $remote->tld,
+                        'renewal_price' => $remote->renewalPrice,
+                        'registered_at' => $remote->registeredAt,
+                        'expires_at' => $remote->expiresAt,
+                        'is_locked' => $remote->isLocked,
+                        'privacy_enabled' => $remote->privacyEnabled,
+                        'auto_renew' => $remote->autoRenew,
                         'inventory_status' => InventoryStatus::Available,
                         'last_seen_at' => now(), 'last_synced_at' => now(), 'nameservers_observed_at' => now(),
                     ]);
-                    $changed = $domain->isDirty(['nameservers', 'remote_status', 'inventory_status']);
+                    $changed = $domain->isDirty([
+                        'nameservers',
+                        'remote_status',
+                        'tld',
+                        'renewal_price',
+                        'registered_at',
+                        'expires_at',
+                        'is_locked',
+                        'privacy_enabled',
+                        'auto_renew',
+                        'inventory_status',
+                    ]);
                     $domain->save();
                     $seen[] = $domain->id;
                     $counts[$new ? 'created_count' : ($changed ? 'updated_count' : 'unchanged_count')]++;

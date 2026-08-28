@@ -43,9 +43,16 @@ class ZComRegistrar implements Registrar
             }
 
             return new RemoteDomain(
-                NameserverSet::domain($domain['name']),
-                NameserverSet::normalize($domain['nameservers'], false),
-                is_string($domain['status'] ?? null) ? $domain['status'] : null,
+                name: NameserverSet::domain($domain['name']),
+                nameservers: NameserverSet::normalize($domain['nameservers'], false),
+                status: is_string($domain['status'] ?? null) ? $domain['status'] : null,
+                tld: is_string($domain['tld'] ?? null) ? $domain['tld'] : NameserverSet::tld($domain['name']),
+                renewalPrice: is_numeric($domain['renewal_price'] ?? null) ? (float) $domain['renewal_price'] : null,
+                registeredAt: is_string($domain['registered_at'] ?? null) ? $domain['registered_at'] : null,
+                expiresAt: is_string($domain['expires_at'] ?? null) ? $domain['expires_at'] : null,
+                isLocked: is_bool($domain['is_locked'] ?? null) ? $domain['is_locked'] : null,
+                privacyEnabled: is_bool($domain['privacy_enabled'] ?? null) ? $domain['privacy_enabled'] : null,
+                autoRenew: is_bool($domain['auto_renew'] ?? null) ? $domain['auto_renew'] : null,
             );
         }, $domains);
 

@@ -38,7 +38,7 @@ export default function Dashboard({
                 </div>
                 <div className="grid gap-6 xl:grid-cols-2">
                     <Card>
-                        <CardHeader className="flex-row items-center justify-between">
+                        <CardHeader className="gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <CardTitle>Recent bulk changes</CardTitle>
                             <Link className="text-sm underline" href="/bulk-changes">
                                 View all
@@ -50,9 +50,9 @@ export default function Dashboard({
                                     <Link
                                         href={`/bulk-changes/${bulk.id}`}
                                         key={bulk.id}
-                                        className="hover:bg-muted flex items-center justify-between rounded border p-3"
+                                        className="hover:bg-muted flex min-w-0 flex-col items-start gap-2 rounded border p-3 sm:flex-row sm:items-center sm:justify-between"
                                     >
-                                        <div>
+                                        <div className="min-w-0">
                                             <div className="font-medium">
                                                 #{bulk.id} · {bulk.type}
                                             </div>
@@ -75,8 +75,11 @@ export default function Dashboard({
                         <CardContent className="space-y-3">
                             {recentSyncRuns.length ? (
                                 recentSyncRuns.map((run) => (
-                                    <div key={run.id} className="flex items-center justify-between rounded border p-3">
-                                        <div>
+                                    <div
+                                        key={run.id}
+                                        className="flex min-w-0 flex-col items-start gap-2 rounded border p-3 sm:flex-row sm:items-center sm:justify-between"
+                                    >
+                                        <div className="min-w-0">
                                             <div className="font-medium">{run.account?.label}</div>
                                             <div className="text-muted-foreground text-xs">
                                                 +{run.created_count} created · {run.updated_count} updated

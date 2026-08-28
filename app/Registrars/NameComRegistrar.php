@@ -30,11 +30,22 @@ class NameComRegistrar implements Registrar
     public function listDomains(int $page = 1): DomainPage
     {
         $data = $this->request('get', '/domains', ['page' => $page, 'perPage' => 250])->json();
-        $domains = array_map(fn (array $domain) => new RemoteDomain(
-            NameserverSet::domain($domain['domainName']),
-            NameserverSet::normalize($domain['nameservers'] ?? [], false),
-            isset($domain['locked']) ? ($domain['locked'] ? 'LOCKED' : 'UNLOCKED') : null,
-        ), $data['domains'] ?? []);
+        $domains = array_map(function (array $domain): RemoteDomain {
+            $name = NameserverSet::domain($domain['domainName']);
+
+            return new RemoteDomain(
+                name: $name,
+                nameservers: NameserverSet::normalize($domain['nameservers'] ?? [], false),
+                status: is_string($domain['status'] ?? null) ? $domain['status'] : null,
+                tld: NameserverSet::tld($name),
+                renewalPrice: is_numeric($domain['renewalPrice'] ?? null) ? (float) $domain['renewalPrice'] : null,
+                registeredAt: is_string($domain['createDate'] ?? null) ? $domain['createDate'] : null,
+                expiresAt: is_string($domain['expireDate'] ?? null) ? $domain['expireDate'] : null,
+                isLocked: is_bool($domain['locked'] ?? null) ? $domain['locked'] : null,
+                privacyEnabled: is_bool($domain['privacyEnabled'] ?? null) ? $domain['privacyEnabled'] : null,
+                autoRenew: is_bool($domain['autorenewEnabled'] ?? null) ? $domain['autorenewEnabled'] : null,
+            );
+        }, $data['domains'] ?? []);
 
         return new DomainPage($domains, isset($data['nextPage']) && $data['nextPage'] ? (int) $data['nextPage'] : null);
     }

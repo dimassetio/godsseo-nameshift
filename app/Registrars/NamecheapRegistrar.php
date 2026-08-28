@@ -18,6 +18,9 @@ use SimpleXMLElement;
 
 class NamecheapRegistrar implements Registrar
 {
+    /** @var array<string, float>|null */
+    private ?array $renewalPrices = null;
+
     public function __construct(private readonly RegistrarAccount $account) {}
 
     public function testConnection(): ConnectionResult
@@ -33,7 +36,27 @@ class NamecheapRegistrar implements Registrar
         $domains = [];
         foreach ($xml->xpath('//*[local-name()="DomainGetListResult"]/*[local-name()="Domain"]') ?: [] as $node) {
             $name = NameserverSet::domain((string) $node['Name']);
-            $domains[] = new RemoteDomain($name, $this->getNameservers($name), (string) ($node['Status'] ?? ''));
+            $tld = NameserverSet::tld($name);
+            $status = (string) ($node['Status'] ?? '');
+            if ($status === '') {
+                $status = match ($this->booleanAttribute((string) ($node['IsExpired'] ?? ''))) {
+                    true => 'EXPIRED',
+                    false => 'ACTIVE',
+                    null => null,
+                };
+            }
+            $domains[] = new RemoteDomain(
+                name: $name,
+                nameservers: $this->getNameservers($name),
+                status: $status,
+                tld: $tld,
+                renewalPrice: $this->renewalPrice($tld),
+                registeredAt: $this->nullableAttribute((string) ($node['Created'] ?? '')),
+                expiresAt: $this->nullableAttribute((string) ($node['Expires'] ?? '')),
+                isLocked: $this->booleanAttribute((string) ($node['IsLocked'] ?? '')),
+                privacyEnabled: $this->booleanAttribute((string) ($node['WhoisGuard'] ?? '')),
+                autoRenew: $this->booleanAttribute((string) ($node['AutoRenew'] ?? '')),
+            );
         }
         $paging = ($xml->xpath('//*[local-name()="Paging"]') ?: [null])[0];
         $total = $paging ? (int) (($paging->xpath('./*[local-name()="TotalItems"]') ?: [0])[0]) : count($domains);
@@ -113,6 +136,41 @@ class NamecheapRegistrar implements Registrar
         };
 
         return new ProviderException($category, mb_substr(strip_tags($message), 0, 500), $code);
+    }
+
+    private function renewalPrice(string $tld): ?float
+    {
+        if ($this->renewalPrices === null) {
+            $xml = $this->request('namecheap.users.getPricing', [
+                'ProductType' => 'DOMAIN',
+                'ProductCategory' => 'DOMAINS',
+                'ActionName' => 'RENEW',
+            ]);
+            $this->renewalPrices = [];
+            $products = $xml->xpath('//*[local-name()="ProductCategory" and translate(@Name, "abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")="RENEW"]/*[local-name()="Product"]') ?: [];
+            foreach ($products as $product) {
+                $price = ($product->xpath('./*[local-name()="Price" and @Duration="1"]') ?: [null])[0];
+                if ($price && is_numeric((string) $price['Price'])) {
+                    $this->renewalPrices[strtolower((string) $product['Name'])] = (float) $price['Price'];
+                }
+            }
+        }
+
+        return $this->renewalPrices[strtolower($tld)] ?? null;
+    }
+
+    private function nullableAttribute(string $value): ?string
+    {
+        return trim($value) !== '' ? trim($value) : null;
+    }
+
+    private function booleanAttribute(string $value): ?bool
+    {
+        return match (strtoupper(trim($value))) {
+            'TRUE', 'YES', 'ENABLED', 'ACTIVE' => true,
+            'FALSE', 'NO', 'DISABLED', 'NOTPRESENT', 'INACTIVE' => false,
+            default => null,
+        };
     }
 
     private function splitDomain(string $domain): array

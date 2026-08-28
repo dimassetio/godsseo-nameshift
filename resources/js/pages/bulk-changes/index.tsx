@@ -19,8 +19,8 @@ export default function BulkHistory({ bulkChanges }: { bulkChanges: Paginated<Bu
                         <CardTitle>{bulkChanges.total} operations</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
+                        <div className="relative w-full max-w-full overflow-x-auto overscroll-x-contain">
+                            <table className="w-full min-w-[720px] text-sm">
                                 <thead>
                                     <tr className="border-b text-left">
                                         <th className="p-3">Operation</th>

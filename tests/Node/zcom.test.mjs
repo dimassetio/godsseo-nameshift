@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { chromium } from 'playwright';
-import { extractDomainLinks, extractNameservers, nameserversEqual, normalizeNameservers } from '../../app/Registrars/Browser/zcom.mjs';
+import { extractDomainLinks, extractDomainMetadata, extractNameservers, nameserversEqual, normalizeNameservers } from '../../app/Registrars/Browser/zcom.mjs';
 
 test('normalizes duplicate nameservers', () => {
     assert.deepEqual(normalizeNameservers(['NS1.EXAMPLE.COM.', 'ns1.example.com', 'NS2.EXAMPLE.COM']), ['ns1.example.com', 'ns2.example.com']);
@@ -31,4 +31,12 @@ test('extracts domains and nameservers from sanitized portal fixtures', async (c
 
     await page.setContent(await readFile(new URL('../Fixtures/zcom/nameservers.html', import.meta.url), 'utf8'));
     assert.deepEqual(await extractNameservers(page), ['ns1.example.com', 'ns2.example.com']);
+    assert.deepEqual(await extractDomainMetadata(page), {
+        renewal_price: 12.5,
+        registered_at: '2024-02-15',
+        expires_at: '2027-02-15',
+        is_locked: true,
+        privacy_enabled: true,
+        auto_renew: false,
+    });
 });

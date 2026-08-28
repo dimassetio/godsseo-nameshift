@@ -41,6 +41,13 @@ final class NameserverSet
         return $domain;
     }
 
+    public static function tld(string $domain): string
+    {
+        $labels = explode('.', self::domain($domain), 2);
+
+        return $labels[1];
+    }
+
     public static function equal(array $left, array $right): bool
     {
         $normalizedLeft = self::normalize($left, false);

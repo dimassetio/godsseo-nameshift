@@ -15,23 +15,52 @@ use Illuminate\Support\Facades\Http;
 test('namecom adapter follows the core api response shape', function () {
     $account = RegistrarAccount::create(['provider' => RegistrarProvider::NameCom, 'environment' => RegistrarEnvironment::Sandbox, 'label' => 'Name.com', 'username' => 'user-test', 'credentials' => ['token' => 'token'], 'is_active' => true]);
     Http::fake([
-        'api.dev.name.com/core/v1/domains?*' => Http::response(['domains' => [['domainName' => 'Example.COM', 'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'], 'locked' => true]], 'nextPage' => 2]),
+        'api.dev.name.com/core/v1/domains?*' => Http::response(['domains' => [[
+            'domainName' => 'Example.COM',
+            'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
+            'status' => 'ACTIVE',
+            'renewalPrice' => 12.99,
+            'createDate' => '2024-01-15T00:00:00Z',
+            'expireDate' => '2027-01-15T00:00:00Z',
+            'locked' => true,
+            'privacyEnabled' => true,
+            'autorenewEnabled' => false,
+        ]], 'nextPage' => 2]),
         'api.dev.name.com/core/v1/domains/example.com:setNameservers' => Http::response(['domainName' => 'example.com'], 200),
     ]);
     $registrar = new NameComRegistrar($account);
     $page = $registrar->listDomains();
-    expect($page->domains[0]->name)->toBe('example.com')->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])->and($page->nextPage)->toBe(2);
+    expect($page->domains[0]->name)->toBe('example.com')
+        ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($page->domains[0]->tld)->toBe('com')
+        ->and($page->domains[0]->status)->toBe('ACTIVE')
+        ->and($page->domains[0]->renewalPrice)->toBe(12.99)
+        ->and($page->domains[0]->registeredAt)->toBe('2024-01-15T00:00:00Z')
+        ->and($page->domains[0]->expiresAt)->toBe('2027-01-15T00:00:00Z')
+        ->and($page->domains[0]->isLocked)->toBeTrue()
+        ->and($page->domains[0]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[0]->autoRenew)->toBeFalse()
+        ->and($page->nextPage)->toBe(2);
     $registrar->setNameservers('example.com', ['ns1.example.com', 'ns2.example.com']);
     Http::assertSent(fn (Request $request) => str_contains($request->url(), ':setNameservers') && $request['nameservers'] === ['ns1.example.com', 'ns2.example.com']);
 });
 
 test('namecheap adapter parses namespaced xml and splits multipart tlds', function () {
     $account = RegistrarAccount::create(['provider' => RegistrarProvider::Namecheap, 'environment' => RegistrarEnvironment::Sandbox, 'label' => 'Namecheap', 'username' => 'user', 'api_user' => 'api-user', 'client_ipv4' => '192.0.2.10', 'credentials' => ['api_key' => 'secret'], 'is_active' => true]);
-    $list = '<?xml version="1.0"?><ApiResponse xmlns="http://api.namecheap.com/xml.response" Status="OK"><Errors/><CommandResponse><DomainGetListResult><Domain Name="Example.CO.UK" Status="ok"/></DomainGetListResult><Paging><TotalItems>1</TotalItems><CurrentPage>1</CurrentPage><PageSize>100</PageSize></Paging></CommandResponse></ApiResponse>';
+    $list = '<?xml version="1.0"?><ApiResponse xmlns="http://api.namecheap.com/xml.response" Status="OK"><Errors/><CommandResponse><DomainGetListResult><Domain Name="Example.CO.UK" Status="ACTIVE" Created="02/15/2024" Expires="02/15/2027" IsLocked="true" AutoRenew="false" WhoisGuard="ENABLED"/></DomainGetListResult><Paging><TotalItems>1</TotalItems><CurrentPage>1</CurrentPage><PageSize>100</PageSize></Paging></CommandResponse></ApiResponse>';
     $dns = '<?xml version="1.0"?><ApiResponse xmlns="http://api.namecheap.com/xml.response" Status="OK"><Errors/><CommandResponse><DomainDNSGetListResult Domain="example.co.uk"><Nameserver>NS1.EXAMPLE.COM.</Nameserver><Nameserver>ns2.example.com</Nameserver></DomainDNSGetListResult></CommandResponse></ApiResponse>';
-    Http::fakeSequence()->push($list, 200)->push($dns, 200);
+    $pricing = '<?xml version="1.0"?><ApiResponse xmlns="http://api.namecheap.com/xml.response" Status="OK"><Errors/><CommandResponse><UserGetPricingResult><ProductType Name="DOMAIN"><ProductCategory Name="RENEW"><Product Name="co.uk"><Price Duration="1" Price="15.98" Currency="USD"/></Product></ProductCategory></ProductType></UserGetPricingResult></CommandResponse></ApiResponse>';
+    Http::fakeSequence()->push($list, 200)->push($dns, 200)->push($pricing, 200);
     $page = (new NamecheapRegistrar($account))->listDomains();
-    expect($page->domains[0]->name)->toBe('example.co.uk')->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com']);
+    expect($page->domains[0]->name)->toBe('example.co.uk')
+        ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($page->domains[0]->tld)->toBe('co.uk')
+        ->and($page->domains[0]->renewalPrice)->toBe(15.98)
+        ->and($page->domains[0]->registeredAt)->toBe('02/15/2024')
+        ->and($page->domains[0]->expiresAt)->toBe('02/15/2027')
+        ->and($page->domains[0]->isLocked)->toBeTrue()
+        ->and($page->domains[0]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[0]->autoRenew)->toBeFalse();
     Http::assertSent(fn (Request $request) => ! str_contains($request->url(), 'dns.getList') || ($request->data()['SLD'] === 'example' && $request->data()['TLD'] === 'co.uk'));
 });
 
@@ -59,6 +88,12 @@ test('zcom adapter maps browser results and persists refreshed session state', f
             'name' => 'Example.COM',
             'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
             'status' => 'ACTIVE',
+            'renewal_price' => 9.99,
+            'registered_at' => '2024-05-01',
+            'expires_at' => '2027-05-01',
+            'is_locked' => true,
+            'privacy_enabled' => false,
+            'auto_renew' => true,
         ]],
         'next_page' => null,
     ], ['cookies' => [['name' => 'session']]]));
@@ -77,6 +112,13 @@ test('zcom adapter maps browser results and persists refreshed session state', f
 
     expect($page->domains[0]->name)->toBe('example.com')
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($page->domains[0]->tld)->toBe('com')
+        ->and($page->domains[0]->renewalPrice)->toBe(9.99)
+        ->and($page->domains[0]->registeredAt)->toBe('2024-05-01')
+        ->and($page->domains[0]->expiresAt)->toBe('2027-05-01')
+        ->and($page->domains[0]->isLocked)->toBeTrue()
+        ->and($page->domains[0]->privacyEnabled)->toBeFalse()
+        ->and($page->domains[0]->autoRenew)->toBeTrue()
         ->and($nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
         ->and($change->accepted)->toBeTrue()
         ->and($account->fresh()->credentials)->toBe([

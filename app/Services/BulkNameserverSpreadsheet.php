@@ -69,7 +69,8 @@ final class BulkNameserverSpreadsheet
         }
     }
 
-    public function template(): string
+    /** @param list<array{domain: string, nameservers: list<string>}> $records */
+    public function template(array $records = []): string
     {
         $path = tempnam(sys_get_temp_dir(), 'nameshift-xlsx-');
         if ($path === false) {
@@ -89,7 +90,7 @@ final class BulkNameserverSpreadsheet
             'xl/workbook.xml' => $this->workbook(),
             'xl/_rels/workbook.xml.rels' => $this->workbookRelationships(),
             'xl/styles.xml' => $this->styles(),
-            'xl/worksheets/sheet1.xml' => $this->dataSheet(),
+            'xl/worksheets/sheet1.xml' => $this->dataSheet($records),
             'xl/worksheets/sheet2.xml' => $this->instructionsSheet(),
         ];
         foreach ($files as $name => $contents) {
@@ -215,9 +216,27 @@ final class BulkNameserverSpreadsheet
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
     }
 
-    private function dataSheet(): string
+    /** @param list<array{domain: string, nameservers: list<string>}> $records */
+    private function dataSheet(array $records): string
     {
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C101"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="34" customWidth="1"/></cols><sheetData><row r="1" ht="24" customHeight="1"><c r="A1" s="1" t="inlineStr"><is><t>domain</t></is></c><c r="B1" s="1" t="inlineStr"><is><t>nameserver1</t></is></c><c r="C1" s="1" t="inlineStr"><is><t>nameserver2</t></is></c></row></sheetData><autoFilter ref="A1:C101"/></worksheet>';
+        $rows = '<row r="1" ht="24" customHeight="1"><c r="A1" s="1" t="inlineStr"><is><t>domain</t></is></c><c r="B1" s="1" t="inlineStr"><is><t>nameserver1</t></is></c><c r="C1" s="1" t="inlineStr"><is><t>nameserver2</t></is></c></row>';
+
+        foreach ($records as $index => $record) {
+            $rowNumber = $index + 2;
+            $nameservers = array_values($record['nameservers']);
+            $rows .= '<row r="'.$rowNumber.'">'
+                .$this->inlineStringCell('A'.$rowNumber, $record['domain'])
+                .$this->inlineStringCell('B'.$rowNumber, $nameservers[0] ?? '')
+                .$this->inlineStringCell('C'.$rowNumber, $nameservers[1] ?? '')
+                .'</row>';
+        }
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C101"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="34" customWidth="1"/></cols><sheetData>'.$rows.'</sheetData><autoFilter ref="A1:C101"/></worksheet>';
+    }
+
+    private function inlineStringCell(string $reference, string $value): string
+    {
+        return '<c r="'.$reference.'" t="inlineStr"><is><t>'.htmlspecialchars($value, ENT_QUOTES | ENT_XML1, 'UTF-8').'</t></is></c>';
     }
 
     private function instructionsSheet(): string

@@ -16,6 +16,10 @@ test('nameserver equality ignores registrar response order', function () {
     ))->toBeTrue();
 });
 
+test('multipart tlds retain every registry suffix label', function () {
+    expect(NameserverSet::tld('Example.CO.UK'))->toBe('co.uk');
+});
+
 test('invalid duplicate url and ip nameservers are rejected', function (array $values) {
     NameserverSet::normalize($values);
 })->with([

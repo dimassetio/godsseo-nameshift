@@ -8,6 +8,7 @@ use App\Enums\BulkItemStatus;
 use App\Enums\ErrorCategory;
 use App\Enums\InventoryStatus;
 use App\Enums\PreviewDisposition;
+use App\Http\Requests\DomainFilterRequest;
 use App\Jobs\ProcessBulkChangeItem;
 use App\Models\BulkChange;
 use App\Models\BulkChangeItem;
@@ -29,9 +30,20 @@ use Throwable;
 
 class BulkChangeController extends Controller
 {
-    public function template(BulkNameserverSpreadsheet $spreadsheet): HttpResponse
+    public function template(DomainFilterRequest $request, BulkNameserverSpreadsheet $spreadsheet): HttpResponse
     {
-        return response($spreadsheet->template(), 200, [
+        $records = Domain::query()
+            ->matchingInventoryFilters($request->validated())
+            ->orderBy('name')
+            ->limit(100)
+            ->get(['name', 'nameservers'])
+            ->map(fn (Domain $domain): array => [
+                'domain' => $domain->name,
+                'nameservers' => $domain->nameservers ?? [],
+            ])
+            ->all();
+
+        return response($spreadsheet->template($records), 200, [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'Content-Disposition' => 'attachment; filename="nameshift-bulk-nameserver-template.xlsx"',
             'Cache-Control' => 'private, no-store',

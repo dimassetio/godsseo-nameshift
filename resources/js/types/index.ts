@@ -75,6 +75,14 @@ export interface SyncRun {
 export interface ManagedDomain {
     id: number;
     name: string;
+    tld: string | null;
+    renewal_price: string | null;
+    registered_at: string | null;
+    expires_at: string | null;
+    remaining_days: number | null;
+    is_locked: boolean | null;
+    privacy_enabled: boolean | null;
+    auto_renew: boolean | null;
     nameservers: string[];
     inventory_status: string;
     remote_status: string | null;

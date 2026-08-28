@@ -30,7 +30,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     const currentPath = window.location.pathname;
 
     return (
-        <div className="px-4 py-6">
+        <div className="w-full max-w-full min-w-0 px-4 py-6">
             <Heading title="Settings" description="Manage registrar connections, presets, and your account" />
 
             <div className="flex flex-col space-y-8 lg:flex-row lg:space-y-0 lg:space-x-12">
@@ -57,7 +57,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                 <Separator className="my-6 md:hidden" />
 
                 <div className="min-w-0 flex-1">
-                    <section className="space-y-12">{children}</section>
+                    <section className="max-w-full min-w-0 space-y-12">{children}</section>
                 </div>
             </div>
         </div>

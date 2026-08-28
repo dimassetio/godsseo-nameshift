@@ -31,10 +31,10 @@ export default function AuditEvents({
                         </p>
                     </div>
                     <Card>
-                        <CardHeader className="flex-row items-center justify-between">
+                        <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <CardTitle>{events.total} events</CardTitle>
                             <select
-                                className="bg-background h-9 rounded border px-2 text-sm"
+                                className="bg-background h-9 w-full min-w-0 rounded border px-2 text-sm sm:w-auto"
                                 value={eventFilter}
                                 onChange={(e) =>
                                     router.get('/settings/audit-events', { event: e.target.value || undefined }, { preserveState: true })
@@ -47,8 +47,8 @@ export default function AuditEvents({
                             </select>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-sm">
+                            <div className="relative w-full max-w-full overflow-x-auto overscroll-x-contain">
+                                <table className="w-full min-w-[900px] text-sm">
                                     <thead>
                                         <tr className="border-b text-left">
                                             <th className="p-3">Time</th>

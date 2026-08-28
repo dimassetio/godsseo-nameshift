@@ -37,7 +37,7 @@ export default function Presets({ presets }: { presets: NameserverPreset[] }) {
                                     <Input value={form.data.name} onChange={(e) => form.setData('name', e.target.value)} required />
                                 </div>
                                 <Nameservers values={form.data.nameservers} onChange={(nameservers) => form.setData('nameservers', nameservers)} />
-                                <div className="flex gap-2">
+                                <div className="flex flex-wrap gap-2">
                                     <Button disabled={form.processing}>Save preset</Button>
                                     <Button
                                         type="button"
@@ -78,7 +78,7 @@ function PresetCard({ preset }: { preset: NameserverPreset }) {
                 >
                     <Input value={form.data.name} onChange={(e) => form.setData('name', e.target.value)} />
                     <Nameservers values={form.data.nameservers} onChange={(nameservers) => form.setData('nameservers', nameservers)} />
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <Button size="sm">Update</Button>
                         <Button
                             size="sm"
@@ -99,14 +99,15 @@ function Nameservers({ values, onChange }: { values: string[]; onChange: (values
     return (
         <div className="space-y-2">
             {values.map((value, index) => (
-                <div className="flex gap-2" key={index}>
+                <div className="flex min-w-0 gap-2" key={index}>
                     <Input
+                        className="min-w-0"
                         value={value}
                         placeholder={`ns${index + 1}.example.com`}
                         onChange={(e) => onChange(values.map((item, i) => (i === index ? e.target.value : item)))}
                     />
                     {values.length > 2 && (
-                        <Button type="button" variant="outline" onClick={() => onChange(values.filter((_, i) => i !== index))}>
+                        <Button type="button" variant="outline" className="shrink-0" onClick={() => onChange(values.filter((_, i) => i !== index))}>
                             Remove
                         </Button>
                     )}

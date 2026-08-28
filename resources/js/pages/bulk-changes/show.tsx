@@ -29,10 +29,15 @@ export default function BulkDetail({
         const timer = window.setInterval(() => router.reload({ only: ['bulkChange', 'items', 'isTerminal'] }), 5000);
         return () => window.clearInterval(timer);
     }, [bulkChange.status, isTerminal]);
-    const confirm = () => router.post(`/bulk-changes/${bulkChange.id}/confirm`, {}, {
-        onStart: () => setConfirming(true),
-        onFinish: () => setConfirming(false),
-    });
+    const confirm = () =>
+        router.post(
+            `/bulk-changes/${bulkChange.id}/confirm`,
+            {},
+            {
+                onStart: () => setConfirming(true),
+                onFinish: () => setConfirming(false),
+            },
+        );
     const done =
         bulkChange.succeeded_count + bulkChange.failed_count + bulkChange.skipped_count + bulkChange.conflict_count + bulkChange.cancelled_count;
     const progress = bulkChange.total_count ? Math.round((done / bulkChange.total_count) * 100) : 0;
@@ -47,7 +52,7 @@ export default function BulkDetail({
             <div className="space-y-6 p-4 md:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
                             <h1 className="text-2xl font-semibold">Bulk change #{bulkChange.id}</h1>
                             <StatusBadge status={bulkChange.status} />
                         </div>
@@ -56,7 +61,7 @@ export default function BulkDetail({
                             {bulkChange.parent ? ` from #${bulkChange.parent.id}` : ''} · created {new Date(bulkChange.created_at).toLocaleString()}
                         </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex w-full flex-wrap gap-2 sm:w-auto">
                         {bulkChange.status !== 'DRAFT' && !isTerminal && (
                             <Button variant="destructive" onClick={() => router.post(`/bulk-changes/${bulkChange.id}/cancel`)}>
                                 Cancel pending work
@@ -87,11 +92,11 @@ export default function BulkDetail({
                     </>
                 )}
                 <Card>
-                    <CardHeader className="flex-row items-center justify-between">
+                    <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <CardTitle>Domains</CardTitle>
                         {bulkChange.status !== 'DRAFT' && (
                             <select
-                                className="bg-background h-9 rounded border px-2 text-sm"
+                                className="bg-background h-9 w-full min-w-0 rounded border px-2 text-sm sm:w-auto"
                                 value={statusFilter}
                                 onChange={(e) =>
                                     router.get(`/bulk-changes/${bulkChange.id}`, { status: e.target.value || undefined }, { preserveState: true })
@@ -105,8 +110,8 @@ export default function BulkDetail({
                         )}
                     </CardHeader>
                     <CardContent className="space-y-4">
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
+                        <div className="relative w-full max-w-full overflow-x-auto overscroll-x-contain">
+                            <table className="w-full min-w-[1100px] text-sm">
                                 <thead>
                                     <tr className="border-b text-left">
                                         <th className="p-3"></th>

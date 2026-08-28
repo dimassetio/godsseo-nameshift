@@ -140,14 +140,14 @@ function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcom
     const testActive = ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '');
     return (
         <Card>
-            <CardHeader className="flex-row items-start justify-between gap-3">
-                <div>
+            <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
                     <CardTitle>{account.label}</CardTitle>
                     <p className="text-muted-foreground mt-1 text-sm">
                         {account.provider} · {account.environment} · {account.domains_count ?? 0} domains
                     </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <StatusBadge status={account.is_active ? 'AVAILABLE' : 'UNAVAILABLE'} />
                     {account.last_test_status && <StatusBadge status={account.last_test_status} />}
                 </div>
@@ -245,7 +245,7 @@ function AccountDialog({
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+            <DialogContent className="sm:max-w-2xl">
                 <DialogHeader>
                     <DialogTitle>{title}</DialogTitle>
                     <DialogDescription>Configure the registrar account and its encrypted credential.</DialogDescription>
@@ -288,14 +288,14 @@ function AccountEditor({
         }
     };
     return (
-        <form onSubmit={submit} className="space-y-4">
+        <form onSubmit={submit} className="min-w-0 space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Label">
                     <Input value={form.data.label} onChange={(e) => form.setData('label', e.target.value)} required />
                 </Field>
                 <Field label="Provider">
                     <select
-                        className="bg-background h-10 rounded-md border px-3"
+                        className="bg-background h-10 w-full min-w-0 rounded-md border px-3"
                         value={form.data.provider}
                         disabled={Boolean(accountId)}
                         onChange={(e) => {
@@ -311,7 +311,7 @@ function AccountEditor({
                 </Field>
                 <Field label="Environment">
                     <select
-                        className="bg-background h-10 rounded-md border px-3"
+                        className="bg-background h-10 w-full min-w-0 rounded-md border px-3"
                         value={form.data.environment}
                         disabled={form.data.provider === 'ZCOM'}
                         onChange={(e) => form.setData('environment', e.target.value as AccountFormData['environment'])}
@@ -415,7 +415,7 @@ function SecretInput({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
     return (
-        <div className="grid gap-2">
+        <div className="grid min-w-0 gap-2">
             <Label>{label}</Label>
             {children}
         </div>
