@@ -16,6 +16,8 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
+use Illuminate\Support\Str;
 use Throwable;
 
 class DynadotRegistrar implements Registrar
@@ -52,17 +54,22 @@ class DynadotRegistrar implements Registrar
             $status = $this->booleanValue($record['Disabled'] ?? null) === true
                 ? 'DISABLED'
                 : ($expiresAt !== null && CarbonImmutable::parse($expiresAt)->isPast() ? 'EXPIRED' : 'ACTIVE');
+            $nameservers = $this->nameserversFrom($record['NameServerSettings'] ?? []);
+            if ($nameservers === [] && $name !== '') {
+                Sleep::for(1)->second();
+                $nameservers = $this->getNameservers($name);
+            }
 
             $domains[] = new RemoteDomain(
                 name: $name,
-                nameservers: $this->nameserversFrom($record['NameServerSettings'] ?? []),
+                nameservers: $nameservers,
                 status: $status,
                 tld: NameserverSet::tld($name),
                 registeredAt: $this->dateValue($record['Registration'] ?? $record['RegistrationDate'] ?? null),
                 expiresAt: $expiresAt,
                 isLocked: $this->booleanValue($record['Locked'] ?? null),
-                privacyEnabled: $this->booleanValue($record['Privacy'] ?? $record['WhoisPrivacy'] ?? null),
-                autoRenew: $this->booleanValue($record['AutoRenew'] ?? $record['RenewOption'] ?? null),
+                privacyEnabled: $this->privacyEnabled($record['Privacy'] ?? $record['WhoisPrivacy'] ?? null),
+                autoRenew: $this->autoRenewEnabled($record['AutoRenew'] ?? $record['RenewOption'] ?? null),
             );
         }
 
@@ -194,6 +201,34 @@ class DynadotRegistrar implements Registrar
             '0', 'FALSE', 'NO', 'DISABLED', 'INACTIVE', 'NONE' => false,
             default => is_bool($value) ? $value : null,
         };
+    }
+
+    private function privacyEnabled(mixed $value): ?bool
+    {
+        return match ($this->normalizedOption($value)) {
+            'full', 'partial' => true,
+            'off' => false,
+            default => $this->booleanValue($value),
+        };
+    }
+
+    private function autoRenewEnabled(mixed $value): ?bool
+    {
+        return match ($this->normalizedOption($value)) {
+            'auto', 'auto renew', 'autorenew' => true,
+            'donot', 'donot renew', 'do not renew', 'no renew option', 'manual' => false,
+            default => $this->booleanValue($value),
+        };
+    }
+
+    private function normalizedOption(mixed $value): string
+    {
+        return Str::of((string) $value)
+            ->trim()
+            ->replace(['_', '-'], ' ')
+            ->squish()
+            ->lower()
+            ->toString();
     }
 
     private function isAssociativeDomain(mixed $records): bool

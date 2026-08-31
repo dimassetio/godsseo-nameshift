@@ -13,6 +13,7 @@ use App\Registrars\RegistrarFactory;
 use App\Registrars\SpaceshipRegistrar;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 
 test('namesilo adapter lists domains and changes nameservers', function () {
     $account = registrarAccount(RegistrarProvider::NameSilo, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
@@ -51,6 +52,7 @@ test('namesilo adapter lists domains and changes nameservers', function () {
 test('dynadot adapter follows api3 pagination and nameserver commands', function () {
     $account = registrarAccount(RegistrarProvider::Dynadot, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
     Http::preventStrayRequests();
+    Sleep::fake();
     Http::fake(function (Request $request) {
         return match ($request->data()['command'] ?? null) {
             'list_domain' => Http::response(['ListDomainInfoResponse' => [
@@ -86,12 +88,66 @@ test('dynadot adapter follows api3 pagination and nameserver commands', function
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
         ->and($page->domains[0]->isLocked)->toBeTrue()
         ->and($page->domains[0]->status)->toBe('ACTIVE')
-        ->and($page->domains[1]->nameservers)->toBe([])
+        ->and($page->domains[1]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
         ->and($registrar->getNameservers('example.com'))->toBe(['ns1.example.com', 'ns2.example.com'])
         ->and($registrar->setNameservers('example.com', ['ns3.example.com', 'ns4.example.com'])->accepted)->toBeTrue();
     Http::assertSent(fn (Request $request): bool => ($request->data()['command'] ?? null) === 'set_ns'
         && $request->data()['ns0'] === 'ns3.example.com'
         && $request->data()['ns1'] === 'ns4.example.com');
+    Sleep::assertSequence([Sleep::for(1)->second()]);
+});
+
+test('dynadot adapter normalizes domain settings and fetches missing nameservers', function () {
+    $account = registrarAccount(RegistrarProvider::Dynadot, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
+    Http::preventStrayRequests();
+    Sleep::fake();
+    Http::fake(function (Request $request) {
+        return match ($request->data()['command'] ?? null) {
+            'list_domain' => Http::response(['ListDomainInfoResponse' => [
+                'ResponseCode' => 0,
+                'Status' => 'success',
+                'TotalCount' => 3,
+                'MainDomains' => [[
+                    'Name' => 'full-privacy.example',
+                    'Privacy' => 'full',
+                    'RenewOption' => 'auto renew',
+                    'NameServerSettings' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com'],
+                ], [
+                    'Name' => 'partial-privacy.example',
+                    'Privacy' => 'partial',
+                    'RenewOption' => 'do not renew',
+                    'NameServerSettings' => ['Type' => 'Dynadot DNS'],
+                ], [
+                    'Name' => 'privacy-off.example',
+                    'Privacy' => 'off',
+                    'RenewOption' => 'no renew option',
+                    'NameServerSettings' => ['Host0' => 'ns3.example.com', 'Host1' => 'ns4.example.com'],
+                ]],
+            ]]),
+            'get_ns' => Http::response(['GetNsResponse' => [
+                'ResponseCode' => 0,
+                'Status' => 'success',
+                'NsContent' => ['Host0' => 'ns5.example.com', 'Host1' => 'ns6.example.com'],
+            ]]),
+            default => Http::response([], 500),
+        };
+    });
+
+    $page = (new DynadotRegistrar($account))->listDomains();
+
+    expect($page->domains[0]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[0]->autoRenew)->toBeTrue()
+        ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($page->domains[1]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[1]->autoRenew)->toBeFalse()
+        ->and($page->domains[1]->nameservers)->toBe(['ns5.example.com', 'ns6.example.com'])
+        ->and($page->domains[2]->privacyEnabled)->toBeFalse()
+        ->and($page->domains[2]->autoRenew)->toBeFalse()
+        ->and($page->domains[2]->nameservers)->toBe(['ns3.example.com', 'ns4.example.com']);
+    Http::assertSent(fn (Request $request): bool => ($request->data()['command'] ?? null) === 'get_ns'
+        && $request->data()['domain'] === 'partial-privacy.example');
+    Http::assertSentCount(2);
+    Sleep::assertSequence([Sleep::for(1)->second()]);
 });
 
 test('porkbun adapter uses paired headers and supported nameserver endpoints', function () {
