@@ -12,6 +12,7 @@ use App\Registrars\DTO\DomainPage;
 use App\Registrars\DTO\RemoteDomain;
 use App\Registrars\Exceptions\ProviderException;
 use App\Services\NameserverSet;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -32,15 +33,16 @@ class NameComRegistrar implements Registrar
         $data = $this->request('get', '/domains', ['page' => $page, 'perPage' => 250])->json();
         $domains = array_map(function (array $domain): RemoteDomain {
             $name = NameserverSet::domain($domain['domainName']);
+            $expiresAt = is_string($domain['expireDate'] ?? null) ? $domain['expireDate'] : null;
 
             return new RemoteDomain(
                 name: $name,
                 nameservers: NameserverSet::normalize($domain['nameservers'] ?? [], false),
-                status: is_string($domain['status'] ?? null) ? $domain['status'] : null,
+                status: is_string($domain['status'] ?? null) ? $domain['status'] : $this->statusFromExpiration($expiresAt),
                 tld: NameserverSet::tld($name),
                 renewalPrice: is_numeric($domain['renewalPrice'] ?? null) ? (float) $domain['renewalPrice'] : null,
                 registeredAt: is_string($domain['createDate'] ?? null) ? $domain['createDate'] : null,
-                expiresAt: is_string($domain['expireDate'] ?? null) ? $domain['expireDate'] : null,
+                expiresAt: $expiresAt,
                 isLocked: is_bool($domain['locked'] ?? null) ? $domain['locked'] : null,
                 privacyEnabled: is_bool($domain['privacyEnabled'] ?? null) ? $domain['privacyEnabled'] : null,
                 autoRenew: is_bool($domain['autorenewEnabled'] ?? null) ? $domain['autorenewEnabled'] : null,
@@ -48,6 +50,19 @@ class NameComRegistrar implements Registrar
         }, $data['domains'] ?? []);
 
         return new DomainPage($domains, isset($data['nextPage']) && $data['nextPage'] ? (int) $data['nextPage'] : null);
+    }
+
+    private function statusFromExpiration(?string $expiresAt): string
+    {
+        if ($expiresAt === null) {
+            return 'ACTIVE';
+        }
+
+        try {
+            return CarbonImmutable::parse($expiresAt)->isPast() ? 'EXPIRED' : 'ACTIVE';
+        } catch (\Throwable) {
+            return 'ACTIVE';
+        }
     }
 
     public function getNameservers(string $domain): array

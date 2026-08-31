@@ -6,7 +6,7 @@ Panduan ini ditujukan untuk memperbarui instalasi Nameshift yang sudah berjalan 
 - branch produksi: `main`
 - user deployment: `deploy`
 - user Nginx/PHP-FPM: `www-data`
-- PHP-FPM: `php8.2-fpm`
+- PHP-FPM: `php8.5-fpm`
 
 Sesuaikan nama user, direktori, branch, dan service dengan server yang digunakan.
 
@@ -145,7 +145,7 @@ Laravel merekomendasikan cache konfigurasi, event, route, dan view saat deployme
 ### Muat ulang PHP dan queue worker
 
 ```bash
-sudo systemctl reload php8.2-fpm
+sudo systemctl reload php8.5-fpm
 php artisan queue:restart
 sudo supervisorctl status
 ```
@@ -172,7 +172,7 @@ php artisan about
 php artisan migrate:status
 php artisan schedule:list
 sudo supervisorctl status
-sudo systemctl status php8.2-fpm --no-pager
+sudo systemctl status php8.5-fpm --no-pager
 sudo systemctl status nginx --no-pager
 tail -n 100 storage/logs/laravel.log
 ```
@@ -346,8 +346,8 @@ Pastikan Chromium beserta library sistemnya terpasang, path dapat dibaca user wo
 ### HTTP 502 dari Nginx
 
 ```bash
-sudo systemctl status php8.2-fpm --no-pager
-sudo journalctl -u php8.2-fpm -n 100 --no-pager
+sudo systemctl status php8.5-fpm --no-pager
+sudo journalctl -u php8.5-fpm -n 100 --no-pager
 sudo tail -n 100 /var/log/nginx/error.log
 ```
 

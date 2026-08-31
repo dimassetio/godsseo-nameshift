@@ -13,19 +13,26 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
 test('namecom adapter follows the core api response shape', function () {
+    $this->travelTo('2026-01-01 00:00:00');
     $account = RegistrarAccount::create(['provider' => RegistrarProvider::NameCom, 'environment' => RegistrarEnvironment::Sandbox, 'label' => 'Name.com', 'username' => 'user-test', 'credentials' => ['token' => 'token'], 'is_active' => true]);
     Http::fake([
-        'api.dev.name.com/core/v1/domains?*' => Http::response(['domains' => [[
-            'domainName' => 'Example.COM',
-            'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
-            'status' => 'ACTIVE',
-            'renewalPrice' => 12.99,
-            'createDate' => '2024-01-15T00:00:00Z',
-            'expireDate' => '2027-01-15T00:00:00Z',
-            'locked' => true,
-            'privacyEnabled' => true,
-            'autorenewEnabled' => false,
-        ]], 'nextPage' => 2]),
+        'api.dev.name.com/core/v1/domains?*' => Http::response(['domains' => [
+            [
+                'domainName' => 'Example.COM',
+                'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
+                'renewalPrice' => 12.99,
+                'createDate' => '2024-01-15T00:00:00Z',
+                'expireDate' => '2027-01-15T00:00:00Z',
+                'locked' => true,
+                'privacyEnabled' => true,
+                'autorenewEnabled' => false,
+            ],
+            [
+                'domainName' => 'expired.example',
+                'nameservers' => [],
+                'expireDate' => '2025-12-31T00:00:00Z',
+            ],
+        ], 'nextPage' => 2]),
         'api.dev.name.com/core/v1/domains/example.com:setNameservers' => Http::response(['domainName' => 'example.com'], 200),
     ]);
     $registrar = new NameComRegistrar($account);
@@ -40,6 +47,7 @@ test('namecom adapter follows the core api response shape', function () {
         ->and($page->domains[0]->isLocked)->toBeTrue()
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeFalse()
+        ->and($page->domains[1]->status)->toBe('EXPIRED')
         ->and($page->nextPage)->toBe(2);
     $registrar->setNameservers('example.com', ['ns1.example.com', 'ns2.example.com']);
     Http::assertSent(fn (Request $request) => str_contains($request->url(), ':setNameservers') && $request['nameservers'] === ['ns1.example.com', 'ns2.example.com']);

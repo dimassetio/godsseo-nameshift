@@ -13,10 +13,17 @@ class DomainController extends Controller
 {
     public function index(DomainFilterRequest $request): Response
     {
-        $filters = $request->validated();
+        $filters = array_merge([
+            'sort' => 'domain',
+            'direction' => 'asc',
+            'per_page' => 25,
+        ], $request->validated());
+        $filters['per_page'] = (int) $filters['per_page'];
         $domains = Domain::query()->with('account:id,label,provider,is_active', 'latestBulkItem.bulkChange:id,status')
             ->matchingInventoryFilters($filters)
-            ->orderBy('name')->paginate(25)->withQueryString();
+            ->sorted($filters['sort'], $filters['direction'])
+            ->paginate($filters['per_page'])
+            ->withQueryString();
 
         return Inertia::render('domains/index', [
             'domains' => $domains, 'filters' => $filters,

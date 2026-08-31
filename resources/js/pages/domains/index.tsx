@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import AppLayout from '@/layouts/app-layout';
 import { type DomainMutation, type ManagedDomain, type Paginated, type RegistrarAccount } from '@/types';
 import { Head, router, useForm } from '@inertiajs/react';
-import { Download, Save, SlidersHorizontal, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Download, Save, SlidersHorizontal, Upload } from 'lucide-react';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 
 const domainColumns = [
@@ -31,7 +31,15 @@ const domainColumns = [
 ] as const;
 
 type DomainColumn = (typeof domainColumns)[number]['id'];
-type DomainFilters = { search?: string; account?: number; status?: string };
+type SortableDomainColumn = Exclude<DomainColumn, 'actions'>;
+type DomainFilters = {
+    search?: string;
+    account?: number;
+    status?: string;
+    sort?: SortableDomainColumn;
+    direction?: 'asc' | 'desc';
+    per_page?: number;
+};
 
 const allDomainColumns = domainColumns.map((column) => column.id);
 const domainColumnStorageKey = 'domains:visible-columns';
@@ -76,6 +84,11 @@ export default function Domains({
     const applyFilters = (event: FormEvent) => {
         event.preventDefault();
         router.get('/domains', { ...filters, search }, { preserveState: true });
+    };
+    const sortBy = (column: SortableDomainColumn) => {
+        const direction = filters.sort === column && filters.direction === 'asc' ? 'desc' : 'asc';
+
+        router.get('/domains', { ...filters, search, sort: column, direction }, { preserveScroll: true, preserveState: true });
     };
 
     return (
@@ -154,11 +167,37 @@ export default function Domains({
                                             .map((column) => (
                                                 <th
                                                     key={column.id}
+                                                    aria-sort={
+                                                        column.id !== 'actions' && filters.sort === column.id
+                                                            ? filters.direction === 'desc'
+                                                                ? 'descending'
+                                                                : 'ascending'
+                                                            : undefined
+                                                    }
                                                     className={
                                                         column.id === 'domain' ? 'p-3' : column.id.startsWith('nameserver') ? 'w-[230px]' : 'pr-4'
                                                     }
                                                 >
-                                                    {column.label}
+                                                    {column.id === 'actions' ? (
+                                                        column.label
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            className="hover:text-foreground inline-flex items-center gap-1.5 py-3 text-left transition-colors"
+                                                            onClick={() => sortBy(column.id)}
+                                                        >
+                                                            {column.label}
+                                                            {filters.sort === column.id ? (
+                                                                filters.direction === 'desc' ? (
+                                                                    <ArrowDown className="size-3.5" aria-hidden="true" />
+                                                                ) : (
+                                                                    <ArrowUp className="size-3.5" aria-hidden="true" />
+                                                                )
+                                                            ) : (
+                                                                <ArrowUpDown className="text-muted-foreground size-3.5" aria-hidden="true" />
+                                                            )}
+                                                        </button>
+                                                    )}
                                                 </th>
                                             ))}
                                     </tr>
@@ -170,7 +209,29 @@ export default function Domains({
                                 </tbody>
                             </table>
                         </div>
-                        <Pagination links={domains.links} />
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <label className="flex items-center gap-2 text-sm">
+                                <span className="text-muted-foreground">Rows per page</span>
+                                <select
+                                    className="bg-background h-9 rounded-md border px-2"
+                                    value={filters.per_page ?? 25}
+                                    onChange={(event) =>
+                                        router.get(
+                                            '/domains',
+                                            { ...filters, search, per_page: Number(event.target.value) },
+                                            { preserveScroll: true, preserveState: true },
+                                        )
+                                    }
+                                >
+                                    {[25, 50, 100, 250, 500].map((option) => (
+                                        <option key={option} value={option}>
+                                            {option}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <Pagination links={domains.links} />
+                        </div>
                     </CardContent>
                 </Card>
                 <Dialog open={columnDialogOpen} onOpenChange={setColumnDialogOpen}>

@@ -42,7 +42,7 @@ class Domain extends Model
             : null);
     }
 
-    /** @param array{search?: string|null, account?: int|null, status?: string|null} $filters */
+    /** @param array{search?: string|null, account?: int|null, status?: string|null, sort?: string, direction?: string, per_page?: int} $filters */
     #[Scope]
     protected function matchingInventoryFilters(Builder $query, array $filters): Builder
     {
@@ -50,6 +50,33 @@ class Domain extends Model
             ->when($filters['search'] ?? null, fn (Builder $query, string $search) => $query->where('name', 'like', '%'.Str::lower($search).'%'))
             ->when($filters['account'] ?? null, fn (Builder $query, int $accountId) => $query->where('registrar_account_id', $accountId))
             ->when($filters['status'] ?? null, fn (Builder $query, string $status) => $query->where('remote_status', $status));
+    }
+
+    #[Scope]
+    protected function sorted(Builder $query, string $column, string $direction): Builder
+    {
+        $sortColumn = match ($column) {
+            'domain' => 'name',
+            'tld' => 'tld',
+            'registrar' => RegistrarAccount::query()
+                ->select('label')
+                ->whereColumn('registrar_accounts.id', 'domains.registrar_account_id'),
+            'renewal_price' => 'renewal_price',
+            'registered_at' => 'registered_at',
+            'expires_at' => 'expires_at',
+            'remaining_days' => 'expires_at',
+            'status' => 'remote_status',
+            'is_locked' => 'is_locked',
+            'privacy_enabled' => 'privacy_enabled',
+            'auto_renew' => 'auto_renew',
+            'nameserver_1' => 'nameservers->[0]',
+            'nameserver_2' => 'nameservers->[1]',
+            default => 'name',
+        };
+
+        return $query
+            ->orderBy($sortColumn, $direction === 'desc' ? 'desc' : 'asc')
+            ->orderBy('domains.id');
     }
 
     public function account(): BelongsTo
