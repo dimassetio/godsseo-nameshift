@@ -52,12 +52,21 @@ class ProcessBulkChangeItem implements ShouldQueue
 
     public function handle(RegistrarFactory $factory, BulkChangeStatusService $statuses): void
     {
-        $item = BulkChangeItem::with(['bulkChange', 'domain.account'])->findOrFail($this->itemId);
+        $item = BulkChangeItem::with(['bulkChange', 'domain.account'])->find($this->itemId);
+        if (! $item) {
+            return;
+        }
+
         if (! $item->status || $item->status->isTerminal()) {
             return;
         }
         if ($item->bulkChange->cancel_requested_at || $item->bulkChange->status === BulkChangeStatus::Cancelled) {
             $this->terminal($item, BulkItemStatus::Cancelled, $statuses);
+
+            return;
+        }
+        if (! $item->domain->account->is_active) {
+            $this->terminal($item, BulkItemStatus::Failed, $statuses, ErrorCategory::Permission, 'The registrar account has been removed.');
 
             return;
         }

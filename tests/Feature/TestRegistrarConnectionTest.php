@@ -63,3 +63,30 @@ test('connection tests share the registrar account lock across job classes', fun
         ->and($middleware[0]->key)->toBe('registrar-account-17')
         ->and($middleware[0]->shareKey)->toBeTrue();
 });
+
+test('api registrar tests use the default queue while browser automation uses its dedicated queue', function () {
+    $apiJob = new TestRegistrarConnection(17, RegistrarProvider::NameSilo);
+    $browserJob = new TestRegistrarConnection(18, RegistrarProvider::ZCom);
+
+    expect($apiJob->queue)->toBe('default')
+        ->and($browserJob->queue)->toBe('registrar-browser');
+});
+
+test('a failed connection test worker records a visible terminal error', function () {
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameSilo,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'NameSilo',
+        'username' => 'operator',
+        'credentials' => ['api_key' => 'secret'],
+        'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Running,
+        'last_test_message' => 'Testing connection.',
+    ]);
+
+    (new TestRegistrarConnection($account->id, $account->provider))->failed(new RuntimeException('Worker stopped.'));
+
+    expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Failed)
+        ->and($account->fresh()->last_test_message)->toBe('Worker stopped.')
+        ->and($account->fresh()->last_tested_at)->not->toBeNull();
+});

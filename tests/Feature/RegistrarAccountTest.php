@@ -1,9 +1,16 @@
 <?php
 
+use App\Enums\BulkChangeStatus;
+use App\Enums\BulkChangeType;
+use App\Enums\BulkItemStatus;
+use App\Enums\PreviewDisposition;
+use App\Enums\RegistrarConnectionStatus;
 use App\Enums\RegistrarEnvironment;
 use App\Enums\RegistrarProvider;
 use App\Enums\RunStatus;
 use App\Jobs\TestRegistrarConnection;
+use App\Models\BulkChange;
+use App\Models\Domain;
 use App\Models\RegistrarAccount;
 use App\Models\SyncRun;
 use App\Models\User;
@@ -46,6 +53,114 @@ test('zcom requires production and an email address when automation is enabled',
         'provider' => 'ZCOM', 'environment' => 'SANDBOX', 'label' => 'Z.com',
         'username' => 'not-an-email', 'secret' => 'password', 'is_active' => true,
     ])->assertSessionHasErrors(['environment', 'username']);
+});
+
+test('new zcom accounts are temporarily disabled while existing accounts remain editable', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)->post('/settings/registrar-accounts', [
+        'provider' => 'ZCOM', 'environment' => 'PRODUCTION', 'label' => 'New Z.com',
+        'username' => 'owner@example.com', 'secret' => 'password', 'is_active' => true,
+    ])->assertSessionHasErrors('provider');
+
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::ZCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Existing Z.com',
+        'username' => 'owner@example.com',
+        'credentials' => ['password' => 'password'],
+        'is_active' => true,
+    ]);
+
+    $this->actingAs($user)->put("/settings/registrar-accounts/{$account->id}", [
+        'provider' => 'ZCOM', 'environment' => 'PRODUCTION', 'label' => 'Updated Z.com',
+        'username' => 'owner@example.com', 'secret' => '', 'is_active' => true,
+    ])->assertSessionHasNoErrors();
+
+    expect($account->fresh()->label)->toBe('Updated Z.com');
+});
+
+test('deleting a registrar account permanently deletes its domains and related history', function () {
+    $user = User::factory()->create();
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Registrar to remove',
+        'username' => 'operator',
+        'credentials' => ['token' => 'secret'],
+        'is_active' => true,
+    ]);
+    $domain = Domain::create([
+        'registrar_account_id' => $account->id,
+        'name' => 'example.com',
+        'nameservers' => ['ns1.example.com', 'ns2.example.com'],
+    ]);
+    $bulkChange = BulkChange::create([
+        'user_id' => $user->id,
+        'type' => BulkChangeType::Change,
+        'target_nameservers' => ['new1.example.com', 'new2.example.com'],
+        'status' => BulkChangeStatus::Succeeded,
+        'total_count' => 1,
+        'succeeded_count' => 1,
+    ]);
+    $bulkItem = $bulkChange->items()->create([
+        'domain_id' => $domain->id,
+        'preview_disposition' => PreviewDisposition::Change,
+        'status' => BulkItemStatus::Succeeded,
+        'preview_nameservers' => $domain->nameservers,
+        'old_nameservers' => $domain->nameservers,
+        'target_nameservers' => ['new1.example.com', 'new2.example.com'],
+    ]);
+
+    $response = $this->actingAs($user)->delete("/settings/registrar-accounts/{$account->id}");
+
+    $response->assertRedirect()->assertSessionHas('success', 'Registrar account and domains deleted.');
+    $this->assertModelMissing($account);
+    $this->assertModelMissing($domain);
+    $this->assertModelMissing($bulkItem);
+    $this->assertModelExists($bulkChange);
+});
+
+test('new registrar credentials are stored using each provider contract', function (
+    string $provider,
+    string $environment,
+    array $input,
+    array $expectedCredentials,
+) {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)->post('/settings/registrar-accounts', [
+        'provider' => $provider,
+        'environment' => $environment,
+        'label' => $provider,
+        'username' => 'operator',
+        'is_active' => true,
+        ...$input,
+    ])->assertRedirect()->assertSessionHasNoErrors();
+
+    expect(RegistrarAccount::where('label', $provider)->firstOrFail()->credentials)->toBe($expectedCredentials);
+})->with([
+    'NameSilo' => ['NAMESILO', 'SANDBOX', ['secret' => 'api-key'], ['api_key' => 'api-key']],
+    'Dynadot' => ['DYNADOT', 'SANDBOX', ['secret' => 'api-key'], ['api_key' => 'api-key']],
+    'Porkbun' => ['PORKBUN', 'SANDBOX', ['api_key' => 'public-key', 'secret' => 'secret-key'], ['api_key' => 'public-key', 'secret_api_key' => 'secret-key']],
+    'Spaceship' => ['SPACESHIP', 'PRODUCTION', ['api_key' => 'public-key', 'secret' => 'secret-key'], ['api_key' => 'public-key', 'api_secret' => 'secret-key']],
+    'Infomaniak' => ['INFOMANIAK', 'PRODUCTION', ['secret' => 'token'], ['token' => 'token']],
+]);
+
+test('paired api providers require both credentials and production-only providers reject sandbox', function () {
+    $user = User::factory()->create();
+
+    $this->actingAs($user)->post('/settings/registrar-accounts', [
+        'provider' => 'PORKBUN', 'environment' => 'SANDBOX', 'label' => 'Porkbun',
+        'username' => 'operator', 'secret' => 'secret-key', 'is_active' => true,
+    ])->assertSessionHasErrors('api_key');
+
+    foreach (['SPACESHIP', 'INFOMANIAK'] as $provider) {
+        $this->actingAs($user)->post('/settings/registrar-accounts', [
+            'provider' => $provider, 'environment' => 'SANDBOX', 'label' => $provider,
+            'username' => 'operator', 'api_key' => 'public-key', 'secret' => 'secret-key', 'is_active' => true,
+        ])->assertSessionHasErrors('environment');
+    }
 });
 
 test('zcom stores its password and invalidates its session when credentials change', function () {
@@ -111,7 +226,7 @@ test('connection tests are queued and duplicate active tests are rejected', func
         ->assertRedirect()
         ->assertSessionHasNoErrors();
 
-    Queue::assertPushed(TestRegistrarConnection::class, fn (TestRegistrarConnection $job) => $job->registrarAccountId === $account->id);
+    Queue::assertPushed(TestRegistrarConnection::class, fn (TestRegistrarConnection $job) => $job->registrarAccountId === $account->id && $job->queue === 'default');
     expect($account->fresh()->last_test_status->value)->toBe('QUEUED');
 
     $this->actingAs($user)
@@ -228,4 +343,65 @@ test('sync status endpoint returns the latest run without reloading the settings
         ->assertOk()
         ->assertJsonPath('accounts.0.sync_runs.0.status', 'FAILED')
         ->assertJsonPath('accounts.0.sync_runs.0.error_message', 'Provider unavailable.');
+});
+
+test('sync status marks a run as failed after the worker stops reporting progress', function () {
+    $user = User::factory()->create();
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::Porkbun,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Stalled Porkbun',
+        'username' => 'operator',
+        'credentials' => ['api_key' => 'key', 'secret_api_key' => 'secret'],
+        'is_active' => true,
+    ]);
+    $run = SyncRun::create([
+        'registrar_account_id' => $account->id,
+        'user_id' => $user->id,
+        'status' => RunStatus::Running,
+        'progress_message' => 'Fetching domain page 1 from Stalled Porkbun.',
+        'started_at' => now()->subMinutes(40),
+    ]);
+    $run->timestamps = false;
+    $run->update(['updated_at' => now()->subMinutes(36)]);
+
+    $this->actingAs($user)
+        ->getJson('/settings/registrar-accounts/sync-status')
+        ->assertOk()
+        ->assertJsonPath('accounts.0.sync_runs.0.status', 'FAILED')
+        ->assertJsonPath('accounts.0.sync_runs.0.progress_message', 'Synchronization stopped reporting progress.')
+        ->assertJsonPath(
+            'accounts.0.sync_runs.0.error_message',
+            'No synchronization activity was recorded for more than 35 minutes. Check the registrar-sync queue worker and application logs, then retry.',
+        );
+
+    expect($run->fresh()->status)->toBe(RunStatus::Failed)
+        ->and($run->fresh()->completed_at)->not->toBeNull();
+});
+
+test('sync status marks a connection test as failed after its worker stops reporting progress', function () {
+    $user = User::factory()->create();
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameSilo,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Stalled NameSilo',
+        'username' => 'operator',
+        'credentials' => ['api_key' => 'secret'],
+        'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Running,
+        'last_test_message' => 'Testing connection.',
+    ]);
+    RegistrarAccount::query()->whereKey($account->id)->update(['updated_at' => now()->subMinutes(6)]);
+
+    $this->actingAs($user)
+        ->getJson('/settings/registrar-accounts/sync-status')
+        ->assertOk()
+        ->assertJsonPath('accounts.0.last_test_status', 'FAILED')
+        ->assertJsonPath(
+            'accounts.0.last_test_message',
+            'The connection test stopped reporting progress for more than five minutes. Verify the queue worker and retry.',
+        );
+
+    expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Failed)
+        ->and($account->fresh()->last_tested_at)->not->toBeNull();
 });

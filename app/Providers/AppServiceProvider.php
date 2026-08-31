@@ -33,6 +33,8 @@ class AppServiceProvider extends ServiceProvider
 
             return match ($item->domain->account->provider->value) {
                 'NAMECOM' => [Limit::perSecond(15)->by($key), Limit::perHour(2800)->by($key)],
+                'DYNADOT' => Limit::perSecond(1)->by($key),
+                'SPACESHIP' => Limit::perMinutes(5, 5)->by($key),
                 'ZCOM' => Limit::perMinute(10)->by($key),
                 default => Limit::perSecond(5)->by($key),
             };

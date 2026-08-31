@@ -33,7 +33,7 @@ export default function Dashboard({
                                 .join(' · ') || 'No inventory'
                         }
                     />
-                    <Metric label="Active accounts" value={metrics.accounts} detail="Namecheap and Name.com connections" />
+                    <Metric label="Active accounts" value={metrics.accounts} detail="Connected registrar accounts" />
                     <Metric label="Failed items" value={metrics.failedItems} detail="Items requiring attention" danger={metrics.failedItems > 0} />
                 </div>
                 <div className="grid gap-6 xl:grid-cols-2">

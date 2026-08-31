@@ -16,6 +16,11 @@ class RegistrarFactory
         return match ($account->provider) {
             RegistrarProvider::Namecheap => new NamecheapRegistrar($account),
             RegistrarProvider::NameCom => new NameComRegistrar($account),
+            RegistrarProvider::NameSilo => new NameSiloRegistrar($account),
+            RegistrarProvider::Dynadot => new DynadotRegistrar($account),
+            RegistrarProvider::Porkbun => new PorkbunRegistrar($account),
+            RegistrarProvider::Spaceship => new SpaceshipRegistrar($account),
+            RegistrarProvider::Infomaniak => new InfomaniakRegistrar($account),
             RegistrarProvider::ZCom => new ZComRegistrar($account, $this->playwright),
         };
     }

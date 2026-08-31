@@ -96,3 +96,20 @@ test('an exhausted queue job records a visible terminal error', function () {
         ->and($bulk->fresh()->status)->toBe(BulkChangeStatus::Failed)
         ->and(DomainMutationReservation::count())->toBe(0);
 });
+
+test('a queued mutation exits when its registrar account was permanently deleted', function () {
+    ['domain' => $domain, 'bulk' => $bulk, 'item' => $item] = pendingMutation();
+    $account = $domain->account;
+    $item->delete();
+    $account->delete();
+    $factory = Mockery::mock(RegistrarFactory::class);
+    $factory->shouldNotReceive('for');
+
+    (new ProcessBulkChangeItem($item->id))->handle($factory, new BulkChangeStatusService);
+
+    $this->assertModelMissing($account);
+    $this->assertModelMissing($domain);
+    $this->assertModelMissing($item);
+    $this->assertModelExists($bulk);
+    expect(DomainMutationReservation::count())->toBe(0);
+});

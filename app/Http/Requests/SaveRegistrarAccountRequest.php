@@ -30,6 +30,7 @@ class SaveRegistrarAccountRequest extends FormRequest
             'label' => ['required', 'string', 'max:255', Rule::unique('registrar_accounts')->ignore($this->account())],
             'username' => ['required', 'string', 'max:255', Rule::when($this->string('provider')->toString() === RegistrarProvider::ZCom->value, ['email'])],
             'api_user' => ['nullable', 'string', 'max:255'],
+            'api_key' => [Rule::requiredIf(fn (): bool => ! $this->account() && $this->usesPairedApiCredentials()), 'nullable', 'string', 'max:2048'],
             'client_ipv4' => ['nullable', Rule::when($this->string('provider')->toString() === RegistrarProvider::Namecheap->value, ['required', 'ipv4'], ['ipv4'])],
             'secret' => [$this->account() ? 'nullable' : 'required', 'string', 'max:2048'],
             'is_active' => ['required', 'boolean'],
@@ -47,12 +48,13 @@ class SaveRegistrarAccountRequest extends FormRequest
                 $validator->errors()->add('provider', 'The provider cannot be changed after an account is created.');
             }
 
-            if ($provider === RegistrarProvider::ZCom && $this->string('environment')->toString() !== RegistrarEnvironment::Production->value) {
-                $validator->errors()->add('environment', 'Z.com only supports the production environment.');
+            if (in_array($provider, [RegistrarProvider::ZCom, RegistrarProvider::Spaceship, RegistrarProvider::Infomaniak], true)
+                && $this->string('environment')->toString() !== RegistrarEnvironment::Production->value) {
+                $validator->errors()->add('environment', "{$provider->value} only supports the production environment.");
             }
 
-            if (! $account && $provider === RegistrarProvider::ZCom && ! config('services.zcom.enabled')) {
-                $validator->errors()->add('provider', 'Z.com browser automation is not enabled.');
+            if (! $account && $provider === RegistrarProvider::ZCom) {
+                $validator->errors()->add('provider', 'Z.com is temporarily unavailable for new accounts.');
             }
         }];
     }
@@ -64,14 +66,26 @@ class SaveRegistrarAccountRequest extends FormRequest
         $provider = RegistrarProvider::from($validated['provider']);
         $account = $this->account();
         $credentials = $account?->credentials ?? [];
+        $apiKey = (string) ($validated['api_key'] ?? '');
         $secret = (string) ($validated['secret'] ?? '');
 
+        if ($apiKey !== '') {
+            $credentials['api_key'] = $apiKey;
+        }
+
         if ($secret !== '') {
-            $credentials = match ($provider) {
-                RegistrarProvider::Namecheap => ['api_key' => $secret],
-                RegistrarProvider::NameCom => ['token' => $secret],
-                RegistrarProvider::ZCom => ['password' => $secret],
+            $credentialName = match ($provider) {
+                RegistrarProvider::Namecheap, RegistrarProvider::NameSilo, RegistrarProvider::Dynadot => 'api_key',
+                RegistrarProvider::NameCom, RegistrarProvider::Infomaniak => 'token',
+                RegistrarProvider::Porkbun => 'secret_api_key',
+                RegistrarProvider::Spaceship => 'api_secret',
+                RegistrarProvider::ZCom => 'password',
             };
+            $credentials[$credentialName] = $secret;
+
+            if ($provider === RegistrarProvider::ZCom) {
+                unset($credentials['storage_state']);
+            }
         } elseif ($provider === RegistrarProvider::ZCom && $account && $account->username !== $validated['username']) {
             unset($credentials['storage_state']);
         }
@@ -93,5 +107,13 @@ class SaveRegistrarAccountRequest extends FormRequest
         $account = $this->route('registrarAccount');
 
         return $account instanceof RegistrarAccount ? $account : null;
+    }
+
+    private function usesPairedApiCredentials(): bool
+    {
+        return in_array($this->string('provider')->toString(), [
+            RegistrarProvider::Porkbun->value,
+            RegistrarProvider::Spaceship->value,
+        ], true);
     }
 }

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\ErrorCategory;
 use App\Enums\RegistrarConnectionStatus;
+use App\Enums\RegistrarProvider;
 use App\Models\RegistrarAccount;
 use App\Registrars\Exceptions\ProviderException;
 use App\Registrars\RegistrarFactory;
@@ -18,13 +19,19 @@ class TestRegistrarConnection implements ShouldQueue
 {
     use Queueable;
 
+    public const TIMEOUT_SECONDS = 240;
+
+    public const STALE_AFTER_SECONDS = self::TIMEOUT_SECONDS + 60;
+
     public int $tries = 3;
 
-    public int $timeout = 240;
+    public int $timeout = self::TIMEOUT_SECONDS;
 
-    public function __construct(public int $registrarAccountId)
+    public bool $failOnTimeout = true;
+
+    public function __construct(public int $registrarAccountId, ?RegistrarProvider $provider = null)
     {
-        $this->onQueue('registrar-browser');
+        $this->onQueue($provider === RegistrarProvider::ZCom ? 'registrar-browser' : 'default');
     }
 
     public function middleware(): array
@@ -97,6 +104,11 @@ class TestRegistrarConnection implements ShouldQueue
             'last_test_status' => RegistrarConnectionStatus::Failed->value,
             'last_test_message' => mb_substr($exception?->getMessage() ?: 'The connection test worker stopped unexpectedly.', 0, 500),
             'last_tested_at' => now(),
+        ]);
+
+        Log::error('Registrar connection test worker failed.', [
+            'registrar_account_id' => $this->registrarAccountId,
+            'exception' => $exception?->getMessage(),
         ]);
     }
 }

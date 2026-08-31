@@ -3,22 +3,23 @@ import StatusBadge from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 import { type RegistrarAccount } from '@/types';
 import { Head, router, useForm } from '@inertiajs/react';
-import { Eye, EyeOff, Plus } from 'lucide-react';
+import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 
 type AccountFormData = {
-    provider: 'NAMECHEAP' | 'NAMECOM' | 'ZCOM';
+    provider: 'NAMECHEAP' | 'NAMECOM' | 'NAMESILO' | 'DYNADOT' | 'PORKBUN' | 'SPACESHIP' | 'INFOMANIAK' | 'ZCOM';
     environment: 'SANDBOX' | 'PRODUCTION';
     label: string;
     username: string;
     api_user: string;
+    api_key: string;
     client_ipv4: string;
     secret: string;
     is_active: boolean;
@@ -29,12 +30,13 @@ const empty: AccountFormData = {
     label: '',
     username: '',
     api_user: '',
+    api_key: '',
     client_ipv4: '',
     secret: '',
     is_active: true,
 };
 
-export default function RegistrarAccounts({ accounts, zcomEnabled }: { accounts: RegistrarAccount[]; zcomEnabled: boolean }) {
+export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAccount[] }) {
     const [visibleAccounts, setVisibleAccounts] = useState(accounts);
     const [pollMessage, setPollMessage] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
@@ -107,7 +109,7 @@ export default function RegistrarAccounts({ accounts, zcomEnabled }: { accounts:
                     <div className="flex flex-wrap items-start justify-between gap-4">
                         <HeadingSmall
                             title="Registrar accounts"
-                            description="Credentials and Z.com browser sessions are encrypted at rest and are never shown again."
+                            description="Registrar credentials are encrypted at rest and are never shown again."
                         />
                         <Button onClick={() => setCreating(true)}>
                             <Plus className="size-4" />
@@ -120,11 +122,10 @@ export default function RegistrarAccounts({ accounts, zcomEnabled }: { accounts:
                         onOpenChange={setCreating}
                         title="Add registrar account"
                         initial={empty}
-                        zcomEnabled={zcomEnabled}
                     />
                     <div className="space-y-4">
                         {visibleAccounts.map((account) => (
-                            <AccountCard account={account} zcomEnabled={zcomEnabled} key={account.id} />
+                            <AccountCard account={account} key={account.id} />
                         ))}
                     </div>
                 </div>
@@ -133,11 +134,17 @@ export default function RegistrarAccounts({ accounts, zcomEnabled }: { accounts:
     );
 }
 
-function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcomEnabled: boolean }) {
+function AccountCard({ account }: { account: RegistrarAccount }) {
     const [editing, setEditing] = useState(false);
+    const deletion = useForm({});
     const lastRun = account.sync_runs?.[0];
-    const syncActive = lastRun && ['QUEUED', 'RUNNING'].includes(lastRun.status);
+    const syncActive = Boolean(lastRun && ['QUEUED', 'RUNNING'].includes(lastRun.status));
     const testActive = ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '');
+    const testProgressDelayed = testActive && Date.now() - new Date(account.updated_at).getTime() > 60 * 1000;
+    const processedCount = lastRun ? lastRun.created_count + lastRun.updated_count + lastRun.unchanged_count : 0;
+    const progressDelayed = Boolean(
+        syncActive && lastRun?.updated_at && Date.now() - new Date(lastRun.updated_at).getTime() > 2 * 60 * 1000,
+    );
     return (
         <Card>
             <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -166,9 +173,23 @@ function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcom
                     </div>
                     {lastRun && (
                         <div className="md:col-span-2">
-                            <span className="text-muted-foreground">Latest run:</span> <StatusBadge status={lastRun.status} /> {lastRun.created_count}{' '}
-                            / {lastRun.updated_count} updated / {lastRun.failed_count} failed
+                            <span className="text-muted-foreground">Latest run:</span> <StatusBadge status={lastRun.status} /> {processedCount} processed ·{' '}
+                            {lastRun.created_count} created · {lastRun.updated_count} updated · {lastRun.unchanged_count} unchanged ·{' '}
+                            {lastRun.failed_count} failed
                         </div>
+                    )}
+                    {lastRun?.progress_message && <p className="text-muted-foreground md:col-span-2">{lastRun.progress_message}</p>}
+                    {lastRun?.started_at && (
+                        <p className="text-muted-foreground md:col-span-2">
+                            Started {new Date(lastRun.started_at).toLocaleString()} · Last activity {new Date(lastRun.updated_at).toLocaleString()}
+                        </p>
+                    )}
+                    {progressDelayed && (
+                        <p className="text-amber-600 md:col-span-2 dark:text-amber-400">
+                            {lastRun?.status === 'QUEUED'
+                                ? 'Still waiting for the registrar-sync queue worker. Verify that the Supervisor worker is running and listening to the registrar-sync queue.'
+                                : 'No progress update for more than two minutes. Porkbun may still be retrieving nameservers; a worker timeout will be reported as failed instead of remaining stuck.'}
+                        </p>
                     )}
                     {lastRun?.error_message && <p className="text-destructive md:col-span-2">{lastRun.error_message}</p>}
                     {account.last_test_message && (
@@ -180,6 +201,13 @@ function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcom
                             }
                         >
                             {account.last_test_message}
+                        </p>
+                    )}
+                    {testProgressDelayed && (
+                        <p className="text-amber-600 md:col-span-2 dark:text-amber-400">
+                            {account.last_test_status === 'QUEUED'
+                                ? 'The connection test is still waiting for a queue worker. API registrar tests should be processed by the default queue.'
+                                : 'The connection test has not reported progress for more than one minute. It will be marked failed after five minutes if the worker does not recover.'}
                         </p>
                     )}
                 </div>
@@ -202,6 +230,36 @@ function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcom
                     <Button size="sm" variant="outline" onClick={() => setEditing(!editing)}>
                         Edit
                     </Button>
+                    <Dialog>
+                        <DialogTrigger asChild>
+                            <Button size="sm" variant="destructive">
+                                <Trash2 className="size-4" />
+                                Delete
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                            <DialogHeader>
+                                <DialogTitle>Delete {account.label}?</DialogTitle>
+                                <DialogDescription>
+                                    This permanently deletes the registrar account and all {account.domains_count ?? 0} domains associated with it from
+                                    Nameshift. Related domain history will also be removed. The account at the registrar provider is not affected. This
+                                    action cannot be undone.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <DialogFooter>
+                                <DialogClose asChild>
+                                    <Button variant="secondary">Cancel</Button>
+                                </DialogClose>
+                                <Button
+                                    variant="destructive"
+                                    disabled={deletion.processing}
+                                    onClick={() => deletion.delete(`/settings/registrar-accounts/${account.id}`, { preserveScroll: true })}
+                                >
+                                    {deletion.processing ? 'Deleting…' : 'Delete account and domains'}
+                                </Button>
+                            </DialogFooter>
+                        </DialogContent>
+                    </Dialog>
                 </div>
                 <AccountDialog
                     open={editing}
@@ -209,13 +267,13 @@ function AccountCard({ account, zcomEnabled }: { account: RegistrarAccount; zcom
                     title="Edit registrar account"
                     accountId={account.id}
                     hasCredential={account.has_credentials}
-                    zcomEnabled={zcomEnabled}
                     initial={{
                         provider: account.provider,
                         environment: account.environment,
                         label: account.label,
                         username: account.username,
                         api_user: account.api_user ?? '',
+                        api_key: '',
                         client_ipv4: account.client_ipv4 ?? '',
                         secret: '',
                         is_active: account.is_active,
@@ -233,7 +291,6 @@ function AccountDialog({
     initial,
     accountId,
     hasCredential,
-    zcomEnabled,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -241,7 +298,6 @@ function AccountDialog({
     initial: AccountFormData;
     accountId?: number;
     hasCredential?: boolean;
-    zcomEnabled: boolean;
 }) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -254,7 +310,6 @@ function AccountDialog({
                     initial={initial}
                     accountId={accountId}
                     hasCredential={hasCredential}
-                    zcomEnabled={zcomEnabled}
                     onSaved={() => onOpenChange(false)}
                 />
             </DialogContent>
@@ -266,13 +321,11 @@ function AccountEditor({
     initial,
     accountId,
     hasCredential = false,
-    zcomEnabled,
     onSaved,
 }: {
     initial: AccountFormData;
     accountId?: number;
     hasCredential?: boolean;
-    zcomEnabled: boolean;
     onSaved: () => void;
 }) {
     const form = useForm<AccountFormData>(initial);
@@ -301,19 +354,24 @@ function AccountEditor({
                         onChange={(e) => {
                             const provider = e.target.value as AccountFormData['provider'];
                             form.setData('provider', provider);
-                            if (provider === 'ZCOM') form.setData('environment', 'PRODUCTION');
+                            if (['ZCOM', 'SPACESHIP', 'INFOMANIAK'].includes(provider)) form.setData('environment', 'PRODUCTION');
                         }}
                     >
                         <option value="NAMECHEAP">Namecheap</option>
                         <option value="NAMECOM">Name.com</option>
-                        {(zcomEnabled || form.data.provider === 'ZCOM') && <option value="ZCOM">Z.com</option>}
+                        <option value="NAMESILO">NameSilo</option>
+                        <option value="DYNADOT">Dynadot</option>
+                        <option value="PORKBUN">Porkbun</option>
+                        <option value="SPACESHIP">Spaceship</option>
+                        <option value="INFOMANIAK">Infomaniak</option>
+                        {form.data.provider === 'ZCOM' && <option value="ZCOM">Z.com (temporarily unavailable)</option>}
                     </select>
                 </Field>
                 <Field label="Environment">
                     <select
                         className="bg-background h-10 w-full min-w-0 rounded-md border px-3"
                         value={form.data.environment}
-                        disabled={form.data.provider === 'ZCOM'}
+                        disabled={['ZCOM', 'SPACESHIP', 'INFOMANIAK'].includes(form.data.provider)}
                         onChange={(e) => form.setData('environment', e.target.value as AccountFormData['environment'])}
                     >
                         <option value="SANDBOX">Sandbox</option>
@@ -342,7 +400,19 @@ function AccountEditor({
                         </Field>
                     </>
                 )}
-                <Field label={form.data.provider === 'NAMECHEAP' ? 'API key' : form.data.provider === 'NAMECOM' ? 'API token' : 'Password'}>
+                {['PORKBUN', 'SPACESHIP'].includes(form.data.provider) && (
+                    <Field label="API key">
+                        <SecretInput
+                            name={`registrar-api-key-${accountId ?? 'new'}`}
+                            autoComplete="new-password"
+                            value={form.data.api_key}
+                            onChange={(value) => form.setData('api_key', value)}
+                            required={!accountId}
+                            placeholder={accountId && hasCredential ? 'Leave blank to keep the saved API key' : undefined}
+                        />
+                    </Field>
+                )}
+                <Field label={secretLabel(form.data.provider)}>
                     <SecretInput
                         name={`registrar-secret-${accountId ?? 'new'}`}
                         autoComplete="new-password"
@@ -365,6 +435,14 @@ function AccountEditor({
             <Button disabled={form.processing}>{accountId ? 'Save changes' : 'Add account'}</Button>
         </form>
     );
+}
+
+function secretLabel(provider: AccountFormData['provider']): string {
+    if (['NAMECHEAP', 'NAMESILO', 'DYNADOT'].includes(provider)) return 'API key';
+    if (['NAMECOM', 'INFOMANIAK'].includes(provider)) return 'API token';
+    if (['PORKBUN', 'SPACESHIP'].includes(provider)) return 'API secret';
+
+    return 'Password';
 }
 
 function SecretInput({

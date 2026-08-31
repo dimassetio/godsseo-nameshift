@@ -47,7 +47,7 @@ export interface Paginated<T> {
 
 export interface RegistrarAccount {
     id: number;
-    provider: 'NAMECHEAP' | 'NAMECOM' | 'ZCOM';
+    provider: 'NAMECHEAP' | 'NAMECOM' | 'NAMESILO' | 'DYNADOT' | 'PORKBUN' | 'SPACESHIP' | 'INFOMANIAK' | 'ZCOM';
     environment: 'SANDBOX' | 'PRODUCTION';
     label: string;
     username: string;
@@ -59,6 +59,7 @@ export interface RegistrarAccount {
     last_test_message: string | null;
     last_tested_at: string | null;
     last_synced_at: string | null;
+    updated_at: string;
     domains_count?: number;
     sync_runs?: SyncRun[];
 }
@@ -69,7 +70,11 @@ export interface SyncRun {
     updated_count: number;
     unchanged_count: number;
     failed_count: number;
+    progress_message: string | null;
     error_message: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    updated_at: string;
     created_at: string;
     account?: RegistrarAccount;
 }
