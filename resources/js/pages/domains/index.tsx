@@ -70,6 +70,30 @@ export default function Domains({
     });
     const [columnDialogOpen, setColumnDialogOpen] = useState(false);
     const [draftColumns, setDraftColumns] = useState<DomainColumn[]>(visibleColumns);
+
+    useEffect(() => {
+        setSearch(filters.search ?? '');
+    }, [filters.search]);
+
+    useEffect(() => {
+        if (search === (filters.search ?? '')) return;
+
+        const timeout = window.setTimeout(() => {
+            router.get(
+                '/domains',
+                { ...filters, search: search || undefined },
+                {
+                    only: ['domains', 'filters'],
+                    preserveScroll: true,
+                    preserveState: true,
+                    replace: true,
+                },
+            );
+        }, 500);
+
+        return () => window.clearTimeout(timeout);
+    }, [filters, search]);
+
     const visible = (column: DomainColumn) => visibleColumns.includes(column);
     const openColumnDialog = () => {
         setDraftColumns(visibleColumns);
@@ -80,10 +104,6 @@ export default function Domains({
         setVisibleColumns(orderedColumns);
         localStorage.setItem(domainColumnStorageKey, JSON.stringify(orderedColumns));
         setColumnDialogOpen(false);
-    };
-    const applyFilters = (event: FormEvent) => {
-        event.preventDefault();
-        router.get('/domains', { ...filters, search }, { preserveState: true });
     };
     const sortBy = (column: SortableDomainColumn) => {
         const direction = filters.sort === column && filters.direction === 'asc' ? 'desc' : 'asc';
@@ -112,7 +132,7 @@ export default function Domains({
 
                 <Card>
                     <CardContent className="pt-6">
-                        <form onSubmit={applyFilters} className="grid gap-3 md:grid-cols-[1fr_220px_180px_auto]">
+                        <div className="grid gap-3 md:grid-cols-[1fr_220px_180px]">
                             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search domain name" />
                             <select
                                 className="bg-background h-10 w-full min-w-0 rounded-md border px-3 text-sm"
@@ -138,10 +158,7 @@ export default function Domains({
                                     </option>
                                 ))}
                             </select>
-                            <Button type="submit" variant="outline">
-                                Search
-                            </Button>
-                        </form>
+                        </div>
                     </CardContent>
                 </Card>
 
