@@ -72,10 +72,83 @@ class SpaceshipRegistrar implements Registrar
             tld: NameserverSet::tld($name),
             registeredAt: is_string($record['registrationDate'] ?? null) ? $record['registrationDate'] : null,
             expiresAt: is_string($record['expirationDate'] ?? null) ? $record['expirationDate'] : null,
-            isLocked: in_array('clientTransferProhibited', $eppStatuses, true),
+            renewalPrice: $this->renewalPriceFrom($record),
+            isLocked: $this->lockedValue($record, $eppStatuses),
             privacyEnabled: $this->privacyEnabled($record['privacyProtection'] ?? null),
-            autoRenew: is_bool($record['autoRenew'] ?? null) ? $record['autoRenew'] : null,
+            autoRenew: $this->booleanValue($record['autoRenew'] ?? null),
         );
+    }
+
+    /** @param array<string, mixed> $record */
+    private function renewalPriceFrom(array $record): ?float
+    {
+        foreach (['renewalPrice', 'renewal_price', 'renewPrice', 'renew_price'] as $key) {
+            $price = $this->priceValue($record[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        foreach (['pricing', 'prices', 'premiumPricing'] as $key) {
+            $price = $this->priceValue($record[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        return null;
+    }
+
+    private function priceValue(mixed $value): ?float
+    {
+        if (is_numeric($value)) {
+            return (float) $value;
+        }
+        if (! is_array($value)) {
+            return null;
+        }
+
+        foreach ($value as $price) {
+            if (! is_array($price) || ! in_array(strtolower((string) ($price['operation'] ?? '')), ['renew', 'renewal'], true)) {
+                continue;
+            }
+
+            return $this->priceValue($price['price'] ?? $price['amount'] ?? $price['value'] ?? null);
+        }
+
+        foreach (['renewalPrice', 'renewal_price', 'renewPrice', 'renew_price', 'renewal', 'renew', 'amount', 'price', 'value'] as $key) {
+            $price = $this->priceValue($value[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param list<mixed> $eppStatuses */
+    private function lockedValue(array $record, array $eppStatuses): ?bool
+    {
+        foreach (['isLocked', 'is_locked', 'locked', 'transferLocked', 'transfer_locked', 'transferLock', 'transfer_lock'] as $key) {
+            if (array_key_exists($key, $record)) {
+                return $this->booleanValue($record[$key]);
+            }
+        }
+
+        return $eppStatuses !== [] ? in_array('clientTransferProhibited', $eppStatuses, true) : null;
+    }
+
+    private function booleanValue(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return match (strtolower(trim((string) $value))) {
+            '1', 'true', 'yes', 'enabled', 'active', 'on' => true,
+            '0', 'false', 'no', 'disabled', 'inactive', 'off', 'none' => false,
+            default => null,
+        };
     }
 
     /** @return list<string> */

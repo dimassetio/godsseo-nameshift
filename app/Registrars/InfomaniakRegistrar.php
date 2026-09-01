@@ -48,12 +48,15 @@ class InfomaniakRegistrar implements Registrar
                 tld: is_string($record['tld'] ?? null) ? strtolower($record['tld']) : NameserverSet::tld($name),
                 registeredAt: $this->timestampValue($record['created_at'] ?? null),
                 expiresAt: $expiresAt,
-                privacyEnabled: is_bool($options['domain_privacy'] ?? null) ? $options['domain_privacy'] : null,
+                renewalPrice: $this->renewalPriceFrom($record),
+                isLocked: $this->lockedValue($record),
+                privacyEnabled: $this->booleanValue($options['domain_privacy'] ?? null),
+                autoRenew: $this->autoRenewValue($record, $options),
             );
         }
 
         $pagination = is_array($payload['pagination'] ?? null) ? $payload['pagination'] : [];
-        $lastPage = $pagination['pages'] ?? $pagination['last_page'] ?? null;
+        $lastPage = $pagination['pages'] ?? $pagination['last_page'] ?? $payload['pages'] ?? null;
 
         return new DomainPage($domains, is_numeric($lastPage) && $page < (int) $lastPage ? $page + 1 : null);
     }
@@ -133,5 +136,100 @@ class InfomaniakRegistrar implements Registrar
         }
 
         return is_string($value) && trim($value) !== '' ? $value : null;
+    }
+
+    /** @param array<string, mixed> $record */
+    private function renewalPriceFrom(array $record): ?float
+    {
+        foreach (['renewal_price', 'renewalPrice', 'renew_price', 'renewPrice'] as $key) {
+            $price = $this->priceValue($record[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        foreach (['pricing', 'prices'] as $key) {
+            $price = $this->priceValue($record[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        return null;
+    }
+
+    private function priceValue(mixed $value): ?float
+    {
+        if (is_numeric($value)) {
+            return (float) $value;
+        }
+        if (! is_array($value)) {
+            return null;
+        }
+
+        foreach ($value as $price) {
+            if (! is_array($price) || ! in_array(strtolower((string) ($price['operation'] ?? '')), ['renew', 'renewal'], true)) {
+                continue;
+            }
+
+            return $this->priceValue($price['price'] ?? $price['amount'] ?? $price['value'] ?? null);
+        }
+
+        foreach (['renewal_price', 'renewalPrice', 'renew_price', 'renewPrice', 'renewal', 'renew', 'amount', 'price', 'value'] as $key) {
+            $price = $this->priceValue($value[$key] ?? null);
+            if ($price !== null) {
+                return $price;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $record */
+    private function lockedValue(array $record): ?bool
+    {
+        foreach (['is_locked', 'isLocked', 'locked', 'transfer_locked', 'transferLocked', 'transfer_lock', 'transferLock'] as $key) {
+            if (array_key_exists($key, $record)) {
+                return $this->booleanValue($record[$key]);
+            }
+        }
+
+        $statuses = $record['epp_statuses'] ?? $record['eppStatuses'] ?? null;
+        if (! is_array($statuses)) {
+            return null;
+        }
+
+        return in_array('clientTransferProhibited', $statuses, true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $record
+     * @param  array<string, mixed>  $options
+     */
+    private function autoRenewValue(array $record, array $options): ?bool
+    {
+        foreach (['auto_renew', 'autoRenew', 'autorenew'] as $key) {
+            if (array_key_exists($key, $record)) {
+                return $this->booleanValue($record[$key]);
+            }
+            if (array_key_exists($key, $options)) {
+                return $this->booleanValue($options[$key]);
+            }
+        }
+
+        return $this->booleanValue($options['renewal_warranty'] ?? null);
+    }
+
+    private function booleanValue(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return match (strtolower(trim((string) $value))) {
+            '1', 'true', 'yes', 'enabled', 'active', 'on' => true,
+            '0', 'false', 'no', 'disabled', 'inactive', 'off', 'none' => false,
+            default => null,
+        };
     }
 }

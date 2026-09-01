@@ -272,6 +272,7 @@ test('spaceship adapter maps embedded nameservers and updates custom hosts', fun
             'autoRenew' => true,
             'registrationDate' => '2024-01-01T00:00:00Z',
             'expirationDate' => '2027-01-01T00:00:00Z',
+            'renewalPrice' => ['amount' => '9.98', 'currency' => 'USD'],
             'lifecycleStatus' => 'active',
             'eppStatuses' => ['clientTransferProhibited'],
             'privacyProtection' => ['level' => 'high'],
@@ -286,8 +287,10 @@ test('spaceship adapter maps embedded nameservers and updates custom hosts', fun
 
     expect($page->domains[0]->status)->toBe('ACTIVE')
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($page->domains[0]->renewalPrice)->toBe(9.98)
         ->and($page->domains[0]->isLocked)->toBeTrue()
-        ->and($page->domains[0]->privacyEnabled)->toBeTrue();
+        ->and($page->domains[0]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[0]->autoRenew)->toBeTrue();
     Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
         && $request['provider'] === 'custom'
         && $request['hosts'] === ['ns3.example.com', 'ns4.example.com']);
@@ -304,9 +307,12 @@ test('infomaniak adapter syncs inventory and reports unsupported delegation writ
                 'tld' => 'com',
                 'created_at' => 1704067200,
                 'expires_at' => 1798761600,
-                'options' => ['domain_privacy' => true],
+                'renewal_price' => ['amount' => '14.90', 'currency' => 'CHF'],
+                'locked' => 'true',
+                'options' => ['domain_privacy' => 'true', 'renewal_warranty' => 'false'],
             ]],
-            'pagination' => ['page' => 1, 'pages' => 1],
+            'page' => 1,
+            'pages' => 2,
         ]),
         'api.infomaniak.com/2/zones/*' => Http::response(['result' => 'success', 'data' => ['nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com']]]),
     ]);
@@ -316,7 +322,11 @@ test('infomaniak adapter syncs inventory and reports unsupported delegation writ
 
     expect($page->domains[0]->name)->toBe('example.com')
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
-        ->and($page->domains[0]->privacyEnabled)->toBeTrue();
+        ->and($page->domains[0]->renewalPrice)->toBe(14.9)
+        ->and($page->domains[0]->isLocked)->toBeTrue()
+        ->and($page->domains[0]->privacyEnabled)->toBeTrue()
+        ->and($page->domains[0]->autoRenew)->toBeFalse()
+        ->and($page->nextPage)->toBe(2);
 
     try {
         $registrar->setNameservers('example.com', ['ns3.example.com', 'ns4.example.com']);
