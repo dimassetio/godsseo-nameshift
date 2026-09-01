@@ -77,6 +77,7 @@ test('dynadot adapter follows api3 pagination and nameserver commands', function
             ]]),
             'get_ns' => Http::response(['GetNsResponse' => ['ResponseCode' => 0, 'Status' => 'success', 'NsContent' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com']]]),
             'set_ns' => Http::response(['SetNsResponse' => ['ResponseCode' => 0, 'Status' => 'success']]),
+            'tld_price' => Http::response(['TldPriceResponse' => ['ResponseCode' => 0, 'Status' => 'success', 'TldPrice' => []]]),
             default => Http::response([], 500),
         };
     });
@@ -110,8 +111,14 @@ test('dynadot adapter normalizes domain settings and fetches missing nameservers
                 'MainDomains' => [[
                     'Name' => 'full-privacy.example',
                     'Privacy' => 'full',
-                    'RenewOption' => 'auto renew',
-                    'NameServerSettings' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com'],
+                    'RenewOption' => 'auto renewal',
+                    'NameServerSettings' => [
+                        'Type' => 'Name Servers',
+                        'NameServers' => [
+                            ['ServerId' => '1', 'ServerName' => 'ns1.example.com'],
+                            ['ServerId' => '2', 'ServerName' => 'ns2.example.com'],
+                        ],
+                    ],
                 ], [
                     'Name' => 'partial-privacy.example',
                     'Privacy' => 'partial',
@@ -120,8 +127,14 @@ test('dynadot adapter normalizes domain settings and fetches missing nameservers
                 ], [
                     'Name' => 'privacy-off.example',
                     'Privacy' => 'off',
-                    'RenewOption' => 'no renew option',
-                    'NameServerSettings' => ['Host0' => 'ns3.example.com', 'Host1' => 'ns4.example.com'],
+                    'RenewOption' => 'manual renewal',
+                    'NameServerSettings' => [
+                        'Type' => 'Name Servers',
+                        'NameServers' => [
+                            ['ServerId' => '3', 'ServerName' => 'ns3.example.com'],
+                            ['ServerId' => '4', 'ServerName' => 'ns4.example.com'],
+                        ],
+                    ],
                 ]],
             ]]),
             'get_ns' => Http::response(['GetNsResponse' => [
@@ -129,6 +142,7 @@ test('dynadot adapter normalizes domain settings and fetches missing nameservers
                 'Status' => 'success',
                 'NsContent' => ['Host0' => 'ns5.example.com', 'Host1' => 'ns6.example.com'],
             ]]),
+            'tld_price' => Http::response(['TldPriceResponse' => ['ResponseCode' => 0, 'Status' => 'success', 'TldPrice' => []]]),
             default => Http::response([], 500),
         };
     });
@@ -146,8 +160,58 @@ test('dynadot adapter normalizes domain settings and fetches missing nameservers
         ->and($page->domains[2]->nameservers)->toBe(['ns3.example.com', 'ns4.example.com']);
     Http::assertSent(fn (Request $request): bool => ($request->data()['command'] ?? null) === 'get_ns'
         && $request->data()['domain'] === 'partial-privacy.example');
-    Http::assertSentCount(2);
+    Http::assertSentCount(3);
     Sleep::assertSequence([Sleep::for(1)->second()]);
+});
+
+test('dynadot adapter maps renewal prices by tld once', function () {
+    $account = registrarAccount(RegistrarProvider::Dynadot, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
+    Http::preventStrayRequests();
+    Http::fake(function (Request $request) {
+        return match ($request->data()['command'] ?? null) {
+            'list_domain' => Http::response(['ListDomainInfoResponse' => [
+                'ResponseCode' => 0,
+                'Status' => 'success',
+                'TotalCount' => 3,
+                'MainDomains' => [[
+                    'Name' => 'example.com',
+                    'NameServerSettings' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com'],
+                ], [
+                    'Name' => 'example.co.uk',
+                    'NameServerSettings' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com'],
+                ], [
+                    'Name' => 'example.invalid',
+                    'NameServerSettings' => ['Host0' => 'ns1.example.com', 'Host1' => 'ns2.example.com'],
+                ]],
+            ]]),
+            'tld_price' => Http::response(['TldPriceResponse' => [
+                'ResponseCode' => 0,
+                'Status' => 'success',
+                'TldPrice' => [[
+                    'Tld' => 'com',
+                    'Price' => ['Renew' => '12.50'],
+                ], [
+                    'Tld' => '.co.uk',
+                    'Price' => ['Renew' => '9.75'],
+                ], [
+                    'Tld' => 'invalid',
+                    'Price' => ['Renew' => 'not-available'],
+                ]],
+            ]]),
+            default => Http::response([], 500),
+        };
+    });
+
+    $page = (new DynadotRegistrar($account))->listDomains();
+
+    expect($page->domains[0]->renewalPrice)->toBe(12.5)
+        ->and($page->domains[1]->renewalPrice)->toBe(9.75)
+        ->and($page->domains[2]->renewalPrice)->toBeNull();
+    Http::assertSent(fn (Request $request): bool => ($request->data()['command'] ?? null) === 'tld_price'
+        && $request->data()['currency'] === 'USD'
+        && $request->data()['count_per_page'] === 1000
+        && $request->data()['page_index'] === 0);
+    Http::assertSentCount(2);
 });
 
 test('porkbun adapter uses paired headers and supported nameserver endpoints', function () {

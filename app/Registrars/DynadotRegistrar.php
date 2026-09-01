@@ -24,6 +24,9 @@ class DynadotRegistrar implements Registrar
 {
     private const PAGE_SIZE = 100;
 
+    /** @var array<string, float>|null */
+    private ?array $renewalPrices = null;
+
     public function __construct(private readonly RegistrarAccount $account) {}
 
     public function testConnection(): ConnectionResult
@@ -50,6 +53,7 @@ class DynadotRegistrar implements Registrar
                 continue;
             }
             $name = NameserverSet::domain((string) ($record['Name'] ?? $record['DomainName'] ?? ''));
+            $tld = NameserverSet::tld($name);
             $expiresAt = $this->dateValue($record['Expiration'] ?? $record['ExpirationDate'] ?? null);
             $status = $this->booleanValue($record['Disabled'] ?? null) === true
                 ? 'DISABLED'
@@ -64,7 +68,8 @@ class DynadotRegistrar implements Registrar
                 name: $name,
                 nameservers: $nameservers,
                 status: $status,
-                tld: NameserverSet::tld($name),
+                tld: $tld,
+                renewalPrice: $this->renewalPrice($tld),
                 registeredAt: $this->dateValue($record['Registration'] ?? $record['RegistrationDate'] ?? null),
                 expiresAt: $expiresAt,
                 isLocked: $this->booleanValue($record['Locked'] ?? null),
@@ -166,6 +171,30 @@ class DynadotRegistrar implements Registrar
         if (! is_array($value)) {
             return [];
         }
+
+        $serverRecords = $value['NameServers'] ?? [];
+        if (is_array($serverRecords) && isset($serverRecords['ServerName'])) {
+            $serverRecords = [$serverRecords];
+        }
+        $nestedNameservers = [];
+        foreach (is_array($serverRecords) ? $serverRecords : [] as $serverRecord) {
+            if (is_string($serverRecord)) {
+                $nestedNameservers[] = $serverRecord;
+
+                continue;
+            }
+            if (! is_array($serverRecord)) {
+                continue;
+            }
+            $serverName = $serverRecord['ServerName'] ?? $serverRecord['Host'] ?? null;
+            if (is_string($serverName)) {
+                $nestedNameservers[] = $serverName;
+            }
+        }
+        if ($nestedNameservers !== []) {
+            return NameserverSet::normalize($nestedNameservers, false);
+        }
+
         uksort($value, 'strnatcasecmp');
         $nameservers = array_filter(
             $value,
@@ -174,6 +203,34 @@ class DynadotRegistrar implements Registrar
         );
 
         return NameserverSet::normalize(array_values($nameservers), false);
+    }
+
+    private function renewalPrice(string $tld): ?float
+    {
+        if ($this->renewalPrices === null) {
+            $data = $this->request('tld_price', [
+                'currency' => 'USD',
+                'count_per_page' => 1000,
+                'page_index' => 0,
+            ]);
+            $this->renewalPrices = [];
+            $prices = $data['TldPrice'] ?? [];
+            if (is_array($prices) && isset($prices['Tld'])) {
+                $prices = [$prices];
+            }
+            foreach (is_array($prices) ? $prices : [] as $price) {
+                if (! is_array($price)) {
+                    continue;
+                }
+                $name = $price['Tld'] ?? null;
+                $renewalPrice = $price['Price']['Renew'] ?? null;
+                if (is_string($name) && is_numeric($renewalPrice)) {
+                    $this->renewalPrices[ltrim(strtolower(trim($name)), '.')] = (float) $renewalPrice;
+                }
+            }
+        }
+
+        return $this->renewalPrices[strtolower($tld)] ?? null;
     }
 
     private function dateValue(mixed $value): ?string
@@ -215,8 +272,8 @@ class DynadotRegistrar implements Registrar
     private function autoRenewEnabled(mixed $value): ?bool
     {
         return match ($this->normalizedOption($value)) {
-            'auto', 'auto renew', 'autorenew' => true,
-            'donot', 'donot renew', 'do not renew', 'no renew option', 'manual' => false,
+            'auto', 'auto renew', 'auto renewal', 'autorenew', 'autorenewal' => true,
+            'donot', 'donot renew', 'do not renew', 'no renew option', 'manual', 'manual renew', 'manual renewal' => false,
             default => $this->booleanValue($value),
         };
     }
