@@ -6,6 +6,7 @@ use App\Enums\BulkItemStatus;
 use App\Enums\InventoryStatus;
 use App\Enums\RegistrarEnvironment;
 use App\Enums\RegistrarProvider;
+use App\Jobs\LoadBulkChangeBatch;
 use App\Jobs\ProcessBulkChangeItem;
 use App\Models\BulkChange;
 use App\Models\Domain;
@@ -54,7 +55,8 @@ function nameserverWorkbook(array $rows): string
 }
 
 test('bulk mutation jobs support Laravel batches', function () {
-    expect(class_uses_recursive(ProcessBulkChangeItem::class))->toHaveKey(Batchable::class);
+    expect(class_uses_recursive(ProcessBulkChangeItem::class))->toHaveKey(Batchable::class)
+        ->and(class_uses_recursive(LoadBulkChangeBatch::class))->toHaveKey(Batchable::class);
 });
 
 test('the Excel template contains current domains and nameservers matching the active filters', function () {
@@ -149,6 +151,43 @@ test('Excel import includes only listed domains and supports per-domain targets'
         ->and($bulk->items()->where('domain_id', $second->id)->value('target_nameservers'))->toBe(['b1.example.com', 'b2.example.com']);
 });
 
+test('Excel import accepts five hundred domains', function () {
+    $user = User::factory()->create();
+    $first = bulkDomain(['name' => 'large-import-001.example.com']);
+    $rows = [[$first->name, 'ns1.example.com', 'ns2.example.com']];
+    foreach (range(2, 500) as $number) {
+        $name = sprintf('large-import-%03d.example.com', $number);
+        Domain::create([
+            'registrar_account_id' => $first->registrar_account_id,
+            'name' => $name,
+            'nameservers' => ['old1.example.com', 'old2.example.com'],
+            'inventory_status' => InventoryStatus::Available,
+        ]);
+        $rows[] = [$name, 'ns1.example.com', 'ns2.example.com'];
+    }
+    $file = UploadedFile::fake()->createWithContent('bulk.xlsx', nameserverWorkbook($rows));
+
+    $response = $this->actingAs($user)->post('/bulk-changes/import', ['file' => $file]);
+
+    $response->assertSessionHasNoErrors();
+    expect(BulkChange::firstOrFail()->items()->count())->toBe(500);
+});
+
+test('Excel import reports the configured safety limit with the failing row and domain', function () {
+    config()->set('nameshift.bulk_changes.max_import_rows', 2);
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->createWithContent('bulk.xlsx', nameserverWorkbook([
+        ['limit-one.example.com', 'ns1.example.com', 'ns2.example.com'],
+        ['limit-two.example.com', 'ns1.example.com', 'ns2.example.com'],
+        ['limit-three.example.com', 'ns1.example.com', 'ns2.example.com'],
+    ]));
+
+    $this->actingAs($user)->post('/bulk-changes/import', ['file' => $file])
+        ->assertInvalid(['file' => 'Excel row 4 (limit-three.example.com): a bulk change is limited to 2 domains per upload.']);
+
+    expect(BulkChange::count())->toBe(0);
+});
+
 test('bulk confirmation needs only a button click', function () {
     Bus::fake();
     $user = User::factory()->create();
@@ -164,7 +203,31 @@ test('bulk confirmation needs only a button click', function () {
     expect($bulk->fresh()->status)->toBe(BulkChangeStatus::Queued)
         ->and($bulk->items()->firstOrFail()->status)->toBe(BulkItemStatus::Pending)
         ->and(DomainMutationReservation::count())->toBe(1);
-    Bus::assertBatched(fn ($batch) => $batch->jobs->count() === 1 && $batch->jobs->first() instanceof ProcessBulkChangeItem);
+    Bus::assertBatched(fn ($batch) => $batch->jobs->count() === 1
+        && $batch->jobs->first() instanceof LoadBulkChangeBatch
+        && $batch->jobs->first()->itemIds === [$bulk->items()->firstOrFail()->id]);
+});
+
+test('bulk confirmation dispatches large changes through configured loader chunks', function () {
+    config()->set('nameshift.bulk_changes.dispatch_chunk_size', 2);
+    Bus::fake();
+    $user = User::factory()->create();
+    $domains = collect(range(1, 3))->map(fn (int $number) => bulkDomain(['name' => "chunk-{$number}.example.com"]));
+    $file = UploadedFile::fake()->createWithContent('bulk.xlsx', nameserverWorkbook(
+        $domains->map(fn (Domain $domain) => [$domain->name, 'ns1.example.com', 'ns2.example.com'])->all(),
+    ));
+    $this->actingAs($user)->post('/bulk-changes/import', ['file' => $file]);
+    $bulk = BulkChange::firstOrFail();
+
+    $this->post("/bulk-changes/{$bulk->id}/confirm")->assertSessionHasNoErrors();
+
+    Bus::assertBatched(function ($batch): bool {
+        $loaders = $batch->jobs->values();
+
+        return $loaders->count() === 2
+            && $loaders->every(fn ($job) => $job instanceof LoadBulkChangeBatch)
+            && $loaders->pluck('itemIds')->map(fn (array $itemIds): int => count($itemIds))->all() === [2, 1];
+    });
 });
 
 test('bulk detail exposes live processing counts for the progress display', function () {

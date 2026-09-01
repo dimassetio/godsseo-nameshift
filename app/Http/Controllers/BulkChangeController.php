@@ -9,7 +9,7 @@ use App\Enums\ErrorCategory;
 use App\Enums\InventoryStatus;
 use App\Enums\PreviewDisposition;
 use App\Http\Requests\DomainFilterRequest;
-use App\Jobs\ProcessBulkChangeItem;
+use App\Jobs\LoadBulkChangeBatch;
 use App\Models\BulkChange;
 use App\Models\BulkChangeItem;
 use App\Models\Domain;
@@ -168,8 +168,11 @@ class BulkChangeController extends Controller
             $bulk->update(['status' => $changeable ? BulkChangeStatus::Queued : BulkChangeStatus::Succeeded, 'total_count' => $items->count(), 'pending_count' => $changeable, 'skipped_count' => $items->count() - $changeable, 'confirmed_at' => now(), 'completed_at' => $changeable ? null : now()]);
             Audit::record('bulk_change.confirmed', $bulk, ['changeable_count' => $changeable, 'total_count' => $items->count()]);
 
+            $dispatchChunkSize = max(1, (int) config('nameshift.bulk_changes.dispatch_chunk_size'));
             $jobs = $items->where('preview_disposition', PreviewDisposition::Change)
-                ->map(fn ($item) => new ProcessBulkChangeItem($item->id))
+                ->pluck('id')
+                ->chunk($dispatchChunkSize)
+                ->map(fn ($itemIds) => new LoadBulkChangeBatch($itemIds->values()->all()))
                 ->all();
             if ($jobs) {
                 $batch = Bus::batch($jobs)->name("Bulk change {$bulk->id}")->allowFailures()->dispatch();

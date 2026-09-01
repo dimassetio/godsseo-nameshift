@@ -33,6 +33,7 @@ final class BulkNameserverSpreadsheet
             $columns = $this->headerColumns($header);
             $records = [];
             $seen = [];
+            $maxImportRows = max(1, (int) config('nameshift.bulk_changes.max_import_rows'));
             foreach ($rows as $rowNumber => $row) {
                 $values = $this->rowValues($row, $sharedStrings);
                 $domainValue = trim($values[$columns['domain']] ?? '');
@@ -59,9 +60,9 @@ final class BulkNameserverSpreadsheet
                 }
                 $seen[$domain] = $excelRow;
                 $records[] = ['domain' => $domain, 'nameservers' => $nameservers];
-                if (count($records) > 100) {
+                if (count($records) > $maxImportRows) {
                     throw ValidationException::withMessages([
-                        'file' => "Excel row {$excelRow} ({$domain}): a bulk change is limited to 100 domains per upload.",
+                        'file' => "Excel row {$excelRow} ({$domain}): a bulk change is limited to {$maxImportRows} domains per upload.",
                     ]);
                 }
             }
@@ -310,7 +311,9 @@ final class BulkNameserverSpreadsheet
 
     private function instructionsSheet(): string
     {
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="100" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>How to use this template</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>1. Enter one managed domain per row in the Bulk Update sheet.</t></is></c></row><row r="4"><c r="A4" t="inlineStr"><is><t>2. Fill nameserver1 and nameserver2. Do not rename or remove the headers.</t></is></c></row><row r="5"><c r="A5" t="inlineStr"><is><t>3. Only domains listed in the file will be included. Maximum 100 domains.</t></is></c></row><row r="6"><c r="A6" t="inlineStr"><is><t>4. Upload the completed .xlsx file in Nameshift and review before confirming.</t></is></c></row></sheetData></worksheet>';
+        $maxImportRows = max(1, (int) config('nameshift.bulk_changes.max_import_rows'));
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="100" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>How to use this template</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>1. Enter one managed domain per row in the Bulk Update sheet.</t></is></c></row><row r="4"><c r="A4" t="inlineStr"><is><t>2. Fill nameserver1 and nameserver2. Do not rename or remove the headers.</t></is></c></row><row r="5"><c r="A5" t="inlineStr"><is><t>3. Only domains listed in the file will be included. Maximum '.$maxImportRows.' domains per upload.</t></is></c></row><row r="6"><c r="A6" t="inlineStr"><is><t>4. Upload the completed .xlsx file in Nameshift and review before confirming.</t></is></c></row></sheetData></worksheet>';
     }
 
     private function domainAssetsInstructionsSheet(): string

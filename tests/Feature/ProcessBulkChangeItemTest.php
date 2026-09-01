@@ -8,6 +8,7 @@ use App\Enums\InventoryStatus;
 use App\Enums\PreviewDisposition;
 use App\Enums\RegistrarEnvironment;
 use App\Enums\RegistrarProvider;
+use App\Jobs\LoadBulkChangeBatch;
 use App\Jobs\ProcessBulkChangeItem;
 use App\Models\BulkChange;
 use App\Models\Domain;
@@ -61,6 +62,17 @@ function fakeRegistrar(array $remote): Registrar
     };
 }
 
+test('bulk loader hydrates its batch with one mutation job per item', function () {
+    [$job, $batch] = (new LoadBulkChangeBatch([10, 20, 30]))->withFakeBatch();
+
+    $job->handle();
+
+    expect($batch->added)->toHaveCount(3)
+        ->and($batch->added[0])->toBeInstanceOf(ProcessBulkChangeItem::class)
+        ->and($batch->added[0]->itemId)->toBe(10)
+        ->and($batch->added[2]->itemId)->toBe(30);
+});
+
 test('mutation job reads before write and records a successful rollback snapshot', function () {
     ['domain' => $domain, 'bulk' => $bulk, 'item' => $item] = pendingMutation();
     $factory = Mockery::mock(RegistrarFactory::class);
@@ -107,6 +119,18 @@ test('an unexpected processing error identifies the domain and concrete cause', 
     expect($item->fresh()->status)->toBe(BulkItemStatus::Failed)
         ->and($item->fresh()->error_category)->toBe(ErrorCategory::Unknown)
         ->and($item->fresh()->error_message)->toBe("Domain {$domain->name}: Browser session could not start.")
+        ->and(DomainMutationReservation::count())->toBe(0);
+});
+
+test('an exhausted bulk loader fails its pending domains with the dispatch cause', function () {
+    ['domain' => $domain, 'bulk' => $bulk, 'item' => $item] = pendingMutation();
+
+    (new LoadBulkChangeBatch([$item->id]))->failed(new RuntimeException('Queue storage is unavailable.'));
+
+    expect($item->fresh()->status)->toBe(BulkItemStatus::Failed)
+        ->and($item->fresh()->error_category)->toBe(ErrorCategory::Unknown)
+        ->and($item->fresh()->error_message)->toBe("Domain {$domain->name}: Queue storage is unavailable.")
+        ->and($bulk->fresh()->status)->toBe(BulkChangeStatus::Failed)
         ->and(DomainMutationReservation::count())->toBe(0);
 });
 
