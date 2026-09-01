@@ -79,3 +79,29 @@ test('a queued synchronization exits when its registrar account was permanently 
     $this->assertModelMissing($account);
     $this->assertModelMissing($run);
 });
+
+test('a stopped synchronization does not persist a provider page after cancellation', function () {
+    $account = RegistrarAccount::create(['provider' => RegistrarProvider::NameCom, 'environment' => RegistrarEnvironment::Sandbox, 'label' => 'Stopped sync', 'username' => 'user', 'credentials' => ['token' => 'token'], 'is_active' => true]);
+    $run = SyncRun::create(['registrar_account_id' => $account->id, 'status' => RunStatus::Queued]);
+    $registrar = Mockery::mock(Registrar::class);
+    $registrar->shouldReceive('listDomains')->once()->with(1)->andReturnUsing(function () use ($run): DomainPage {
+        $run->update([
+            'status' => RunStatus::Cancelled,
+            'progress_message' => 'Synchronization stopped by user.',
+            'completed_at' => now(),
+        ]);
+
+        return new DomainPage([
+            new RemoteDomain('should-not-save.example', ['ns1.example.com', 'ns2.example.com']),
+        ], null);
+    });
+    $factory = Mockery::mock(RegistrarFactory::class);
+    $factory->shouldReceive('for')->once()->andReturn($registrar);
+
+    (new SyncRegistrarAccount($run->id))->handle($factory);
+
+    expect($run->fresh()->status)->toBe(RunStatus::Cancelled)
+        ->and($run->fresh()->progress_message)->toBe('Synchronization stopped by user.')
+        ->and($account->domains()->count())->toBe(0)
+        ->and($account->fresh()->last_synced_at)->toBeNull();
+});

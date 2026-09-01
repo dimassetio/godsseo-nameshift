@@ -32,7 +32,9 @@ Route::middleware(['auth'])->group(function () {
     Route::put('settings/registrar-accounts/{registrarAccount}', [RegistrarAccountController::class, 'update'])->name('registrar-accounts.update');
     Route::delete('settings/registrar-accounts/{registrarAccount}', [RegistrarAccountController::class, 'destroy'])->name('registrar-accounts.destroy');
     Route::post('settings/registrar-accounts/{registrarAccount}/test', [RegistrarAccountController::class, 'test'])->name('registrar-accounts.test');
+    Route::post('settings/registrar-accounts/{registrarAccount}/test/stop', [RegistrarAccountController::class, 'stopTest'])->name('registrar-accounts.test.stop');
     Route::post('settings/registrar-accounts/{registrarAccount}/sync', [RegistrarAccountController::class, 'sync'])->name('registrar-accounts.sync');
+    Route::post('settings/registrar-accounts/{registrarAccount}/sync/stop', [RegistrarAccountController::class, 'stopSync'])->name('registrar-accounts.sync.stop');
     Route::post('settings/registrar-accounts/sync-all', [RegistrarAccountController::class, 'syncAll'])->name('registrar-accounts.sync-all');
 
     Route::get('settings/nameserver-presets', [NameserverPresetController::class, 'index'])->name('nameserver-presets.index');

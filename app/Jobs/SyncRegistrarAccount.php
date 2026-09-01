@@ -12,6 +12,7 @@ use App\Registrars\RegistrarFactory;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -59,18 +60,30 @@ class SyncRegistrarAccount implements ShouldQueue
 
         $account = RegistrarAccount::findOrFail($run->registrar_account_id);
         if (! $account->is_active) {
-            $run->update(['status' => RunStatus::Failed, 'error_message' => 'The registrar account is inactive.', 'completed_at' => now()]);
+            SyncRun::query()
+                ->whereKey($run->id)
+                ->where('status', RunStatus::Queued->value)
+                ->update(['status' => RunStatus::Failed->value, 'error_message' => 'The registrar account is inactive.', 'completed_at' => now()]);
 
             return;
         }
 
-        $run->update([
-            'status' => RunStatus::Running,
-            'started_at' => $run->started_at ?: now(),
-            'completed_at' => null,
-            'error_message' => null,
-            'progress_message' => 'Starting registrar synchronization.',
-        ]);
+        $startedRun = SyncRun::query()
+            ->whereKey($run->id)
+            ->where('status', RunStatus::Queued->value)
+            ->update([
+                'status' => RunStatus::Running->value,
+                'started_at' => $run->started_at ?: now(),
+                'completed_at' => null,
+                'error_message' => null,
+                'progress_message' => 'Starting registrar synchronization.',
+            ]);
+
+        if ($startedRun === 0) {
+            return;
+        }
+
+        $run->refresh();
         $started = microtime(true);
         $seen = [];
         $counts = ['created_count' => 0, 'updated_count' => 0, 'unchanged_count' => 0, 'failed_count' => 0];
@@ -78,11 +91,23 @@ class SyncRegistrarAccount implements ShouldQueue
             $registrar = $factory->for($account);
             $page = 1;
             do {
+                if ($run->refresh()->status === RunStatus::Cancelled) {
+                    return;
+                }
+
                 $run->update(array_merge($counts, [
                     'progress_message' => "Fetching domain page {$page} from {$account->label}.",
                 ]));
                 $result = $registrar->listDomains($page);
+                if ($run->refresh()->status === RunStatus::Cancelled) {
+                    return;
+                }
+
                 foreach ($result->domains as $remote) {
+                    if ($run->refresh()->status === RunStatus::Cancelled) {
+                        return;
+                    }
+
                     $domain = Domain::firstOrNew(['registrar_account_id' => $account->id, 'name' => $remote->name]);
                     $new = ! $domain->exists;
                     $domain->fill([
@@ -123,29 +148,55 @@ class SyncRegistrarAccount implements ShouldQueue
                 ]));
             } while ($page !== null);
 
-            $account->domains()->when($seen, fn ($query) => $query->whereNotIn('id', $seen))
-                ->update(['inventory_status' => InventoryStatus::Unavailable->value]);
             $processedCount = $counts['created_count'] + $counts['updated_count'] + $counts['unchanged_count'];
-            $run->update(array_merge($counts, [
-                'status' => RunStatus::Succeeded,
-                'progress_message' => "Synchronization completed for {$processedCount} domains.",
-                'completed_at' => now(),
-            ]));
-            $account->update(['last_synced_at' => now()]);
+            $completed = DB::transaction(function () use ($account, $counts, $processedCount, $run, $seen): bool {
+                $lockedRun = SyncRun::query()->lockForUpdate()->findOrFail($run->id);
+                if ($lockedRun->status !== RunStatus::Running) {
+                    return false;
+                }
+
+                $account->domains()->when($seen, fn ($query) => $query->whereNotIn('id', $seen))
+                    ->update(['inventory_status' => InventoryStatus::Unavailable->value]);
+                $lockedRun->update(array_merge($counts, [
+                    'status' => RunStatus::Succeeded,
+                    'progress_message' => "Synchronization completed for {$processedCount} domains.",
+                    'completed_at' => now(),
+                ]));
+                $account->update(['last_synced_at' => now()]);
+
+                return true;
+            });
+
+            if (! $completed) {
+                return;
+            }
+
             Log::info('Registrar synchronization completed.', ['sync_run_id' => $run->id, 'provider' => $account->provider->value, 'duration_ms' => (int) ((microtime(true) - $started) * 1000)] + $counts);
         } catch (Throwable $exception) {
+            if ($run->refresh()->status === RunStatus::Cancelled) {
+                return;
+            }
+
             $willRetry = $exception instanceof ProviderException
                 && $exception->retryable()
                 && $this->attempts() < $this->tries;
-            $run->update(array_merge($counts, [
-                'status' => $willRetry ? RunStatus::Queued : RunStatus::Failed,
-                'failed_count' => $counts['failed_count'] + 1,
-                'error_message' => mb_substr($exception->getMessage(), 0, 500),
-                'progress_message' => $willRetry
-                    ? 'Temporary provider error. Waiting to retry synchronization.'
-                    : 'Synchronization failed.',
-                'completed_at' => $willRetry ? null : now(),
-            ]));
+            $updated = SyncRun::query()
+                ->whereKey($run->id)
+                ->where('status', RunStatus::Running->value)
+                ->update(array_merge($counts, [
+                    'status' => $willRetry ? RunStatus::Queued : RunStatus::Failed,
+                    'failed_count' => $counts['failed_count'] + 1,
+                    'error_message' => mb_substr($exception->getMessage(), 0, 500),
+                    'progress_message' => $willRetry
+                        ? 'Temporary provider error. Waiting to retry synchronization.'
+                        : 'Synchronization failed.',
+                    'completed_at' => $willRetry ? null : now(),
+                ]));
+
+            if ($updated === 0) {
+                return;
+            }
+
             Log::warning('Registrar synchronization failed.', [
                 'sync_run_id' => $run->id,
                 'registrar_account_id' => $account->id,

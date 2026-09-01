@@ -51,43 +51,73 @@ class TestRegistrarConnection implements ShouldQueue
     public function handle(RegistrarFactory $factory): void
     {
         $account = RegistrarAccount::findOrFail($this->registrarAccountId);
-        $account->update([
-            'last_test_status' => RegistrarConnectionStatus::Running,
-            'last_test_message' => 'Testing connection.',
-            'last_tested_at' => null,
-        ]);
+        $started = RegistrarAccount::query()
+            ->whereKey($account->id)
+            ->where('last_test_status', RegistrarConnectionStatus::Queued->value)
+            ->update([
+                'last_test_status' => RegistrarConnectionStatus::Running->value,
+                'last_test_message' => 'Testing connection.',
+                'last_tested_at' => null,
+            ]);
+
+        if ($started === 0) {
+            return;
+        }
+
+        $account->refresh();
 
         try {
             $result = $factory->for($account)->testConnection();
-            $account->update([
-                'last_test_status' => RegistrarConnectionStatus::Succeeded,
-                'last_test_message' => $result->message,
-                'last_tested_at' => now(),
-            ]);
+            RegistrarAccount::query()
+                ->whereKey($account->id)
+                ->where('last_test_status', RegistrarConnectionStatus::Running->value)
+                ->update([
+                    'last_test_status' => RegistrarConnectionStatus::Succeeded->value,
+                    'last_test_message' => $result->message,
+                    'last_tested_at' => now(),
+                ]);
         } catch (ProviderException $exception) {
             if ($exception->retryable() && $this->attempts() < $this->tries) {
-                $account->update([
-                    'last_test_status' => RegistrarConnectionStatus::Queued,
-                    'last_test_message' => $exception->getMessage(),
-                ]);
+                $queued = RegistrarAccount::query()
+                    ->whereKey($account->id)
+                    ->where('last_test_status', RegistrarConnectionStatus::Running->value)
+                    ->update([
+                        'last_test_status' => RegistrarConnectionStatus::Queued->value,
+                        'last_test_message' => $exception->getMessage(),
+                    ]);
+
+                if ($queued === 0) {
+                    return;
+                }
 
                 throw $exception;
             }
 
-            $account->update([
-                'last_test_status' => $exception->category === ErrorCategory::ActionRequired
-                    ? RegistrarConnectionStatus::ActionRequired
-                    : RegistrarConnectionStatus::Failed,
-                'last_test_message' => mb_substr($exception->getMessage(), 0, 500),
-                'last_tested_at' => now(),
-            ]);
+            RegistrarAccount::query()
+                ->whereKey($account->id)
+                ->where('last_test_status', RegistrarConnectionStatus::Running->value)
+                ->update([
+                    'last_test_status' => $exception->category === ErrorCategory::ActionRequired
+                        ? RegistrarConnectionStatus::ActionRequired->value
+                        : RegistrarConnectionStatus::Failed->value,
+                    'last_test_message' => mb_substr($exception->getMessage(), 0, 500),
+                    'last_tested_at' => now(),
+                ]);
         } catch (Throwable $exception) {
             report($exception);
-            $account->update([
-                'last_test_status' => RegistrarConnectionStatus::Failed,
-                'last_test_message' => 'Unexpected registrar connection error.',
-                'last_tested_at' => now(),
-            ]);
+            RegistrarAccount::query()
+                ->whereKey($account->id)
+                ->where('last_test_status', RegistrarConnectionStatus::Running->value)
+                ->update([
+                    'last_test_status' => RegistrarConnectionStatus::Failed->value,
+                    'last_test_message' => 'Unexpected registrar connection error.',
+                    'last_tested_at' => now(),
+                ]);
+        }
+
+        $account->refresh();
+        if ($account->last_test_status === RegistrarConnectionStatus::Cancelled) {
+            return;
         }
 
         Log::info('Registrar connection test completed.', [
@@ -100,11 +130,14 @@ class TestRegistrarConnection implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        RegistrarAccount::whereKey($this->registrarAccountId)->update([
-            'last_test_status' => RegistrarConnectionStatus::Failed->value,
-            'last_test_message' => mb_substr($exception?->getMessage() ?: 'The connection test worker stopped unexpectedly.', 0, 500),
-            'last_tested_at' => now(),
-        ]);
+        RegistrarAccount::query()
+            ->whereKey($this->registrarAccountId)
+            ->whereIn('last_test_status', [RegistrarConnectionStatus::Queued->value, RegistrarConnectionStatus::Running->value])
+            ->update([
+                'last_test_status' => RegistrarConnectionStatus::Failed->value,
+                'last_test_message' => mb_substr($exception?->getMessage() ?: 'The connection test worker stopped unexpectedly.', 0, 500),
+                'last_tested_at' => now(),
+            ]);
 
         Log::error('Registrar connection test worker failed.', [
             'registrar_account_id' => $this->registrarAccountId,

@@ -84,6 +84,27 @@ class RegistrarAccountController extends Controller
         return back()->with('success', 'Connection test queued.');
     }
 
+    public function stopTest(RegistrarAccount $registrarAccount): RedirectResponse
+    {
+        $stopped = RegistrarAccount::query()
+            ->whereKey($registrarAccount->id)
+            ->whereIn('last_test_status', [RegistrarConnectionStatus::Queued->value, RegistrarConnectionStatus::Running->value])
+            ->update([
+                'last_test_status' => RegistrarConnectionStatus::Cancelled->value,
+                'last_test_message' => 'Connection test stopped by user.',
+                'last_tested_at' => now(),
+            ]);
+
+        if ($stopped === 0) {
+            return back()->withErrors(['connection' => 'There is no active connection test to stop.']);
+        }
+
+        $registrarAccount->refresh();
+        Audit::record('registrar_account.connection_test_cancelled', $registrarAccount);
+
+        return back()->with('success', 'Connection test stopped.');
+    }
+
     public function sync(Request $request, RegistrarAccount $registrarAccount): RedirectResponse
     {
         abort_unless($registrarAccount->is_active, 422, 'Inactive accounts cannot be synchronized.');
@@ -100,6 +121,36 @@ class RegistrarAccountController extends Controller
         Audit::record('registrar_account.sync_requested', $registrarAccount, ['sync_run_id' => $run->id]);
 
         return back()->with('success', 'Synchronization queued.');
+    }
+
+    public function stopSync(RegistrarAccount $registrarAccount): RedirectResponse
+    {
+        $run = $registrarAccount->syncRuns()
+            ->whereIn('status', [RunStatus::Queued->value, RunStatus::Running->value])
+            ->latest()
+            ->first();
+
+        if (! $run) {
+            return back()->withErrors(['sync' => 'There is no active synchronization to stop.']);
+        }
+
+        $stopped = SyncRun::query()
+            ->whereKey($run->id)
+            ->whereIn('status', [RunStatus::Queued->value, RunStatus::Running->value])
+            ->update([
+                'status' => RunStatus::Cancelled->value,
+                'progress_message' => 'Synchronization stopped by user.',
+                'error_message' => null,
+                'completed_at' => now(),
+            ]);
+
+        if ($stopped === 0) {
+            return back()->withErrors(['sync' => 'The synchronization already finished before it could be stopped.']);
+        }
+
+        Audit::record('registrar_account.sync_cancelled', $registrarAccount, ['sync_run_id' => $run->id]);
+
+        return back()->with('success', 'Synchronization stopped.');
     }
 
     public function syncAll(Request $request): RedirectResponse

@@ -20,6 +20,7 @@ test('connection test records a successful result', function () {
         'username' => 'operator',
         'credentials' => ['token' => 'secret'],
         'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Queued,
     ]);
     $registrar = Mockery::mock(Registrar::class);
     $registrar->shouldReceive('testConnection')->once()->andReturn(new ConnectionResult(true, 'Connected.'));
@@ -42,6 +43,7 @@ test('connection test records an authentication action requirement without retry
         'username' => 'operator',
         'credentials' => ['token' => 'secret'],
         'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Queued,
     ]);
     $registrar = Mockery::mock(Registrar::class);
     $registrar->shouldReceive('testConnection')->once()->andThrow(new ProviderException(ErrorCategory::ActionRequired, 'Enter the OTP.'));
@@ -89,4 +91,33 @@ test('a failed connection test worker records a visible terminal error', functio
     expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Failed)
         ->and($account->fresh()->last_test_message)->toBe('Worker stopped.')
         ->and($account->fresh()->last_tested_at)->not->toBeNull();
+});
+
+test('a stopped connection test does not overwrite the cancelled status when the provider returns', function () {
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Cancelled Name.com test',
+        'username' => 'operator',
+        'credentials' => ['token' => 'secret'],
+        'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Queued,
+    ]);
+    $registrar = Mockery::mock(Registrar::class);
+    $registrar->shouldReceive('testConnection')->once()->andReturnUsing(function () use ($account): ConnectionResult {
+        $account->update([
+            'last_test_status' => RegistrarConnectionStatus::Cancelled,
+            'last_test_message' => 'Connection test stopped by user.',
+            'last_tested_at' => now(),
+        ]);
+
+        return new ConnectionResult(true, 'Connected.');
+    });
+    $factory = Mockery::mock(RegistrarFactory::class);
+    $factory->shouldReceive('for')->once()->andReturn($registrar);
+
+    (new TestRegistrarConnection($account->id))->handle($factory);
+
+    expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Cancelled)
+        ->and($account->fresh()->last_test_message)->toBe('Connection test stopped by user.');
 });

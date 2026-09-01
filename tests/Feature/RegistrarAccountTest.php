@@ -234,6 +234,48 @@ test('connection tests are queued and duplicate active tests are rejected', func
         ->assertSessionHasErrors('connection');
 });
 
+test('active connection tests and synchronizations can be stopped', function () {
+    $user = User::factory()->create();
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameCom,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Busy Name.com',
+        'username' => 'operator',
+        'credentials' => ['token' => 'secret'],
+        'is_active' => true,
+        'last_test_status' => RegistrarConnectionStatus::Running,
+        'last_test_message' => 'Testing connection.',
+    ]);
+    $run = SyncRun::create([
+        'registrar_account_id' => $account->id,
+        'user_id' => $user->id,
+        'status' => RunStatus::Queued,
+        'progress_message' => 'Waiting for the registrar sync worker.',
+    ]);
+
+    $this->actingAs($user)
+        ->post("/settings/registrar-accounts/{$account->id}/test/stop")
+        ->assertRedirect()
+        ->assertSessionHas('success', 'Connection test stopped.');
+    $this->actingAs($user)
+        ->post("/settings/registrar-accounts/{$account->id}/sync/stop")
+        ->assertRedirect()
+        ->assertSessionHas('success', 'Synchronization stopped.');
+
+    expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Cancelled)
+        ->and($account->fresh()->last_test_message)->toBe('Connection test stopped by user.')
+        ->and($run->fresh()->status)->toBe(RunStatus::Cancelled)
+        ->and($run->fresh()->progress_message)->toBe('Synchronization stopped by user.')
+        ->and($run->fresh()->completed_at)->not->toBeNull();
+
+    $this->actingAs($user)
+        ->post("/settings/registrar-accounts/{$account->id}/test/stop")
+        ->assertSessionHasErrors('connection');
+    $this->actingAs($user)
+        ->post("/settings/registrar-accounts/{$account->id}/sync/stop")
+        ->assertSessionHasErrors('sync');
+});
+
 test('namecheap requires an ipv4 address', function () {
     $user = User::factory()->create();
     $this->actingAs($user)->post('/settings/registrar-accounts', [

@@ -9,4 +9,5 @@ enum RegistrarConnectionStatus: string
     case Succeeded = 'SUCCEEDED';
     case Failed = 'FAILED';
     case ActionRequired = 'ACTION_REQUIRED';
+    case Cancelled = 'CANCELLED';
 }

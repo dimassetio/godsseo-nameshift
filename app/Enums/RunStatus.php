@@ -8,4 +8,5 @@ enum RunStatus: string
     case Running = 'RUNNING';
     case Succeeded = 'SUCCEEDED';
     case Failed = 'FAILED';
+    case Cancelled = 'CANCELLED';
 }

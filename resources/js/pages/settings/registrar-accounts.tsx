@@ -3,14 +3,23 @@ import StatusBadge from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+    Dialog,
+    DialogClose,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import AppLayout from '@/layouts/app-layout';
 import SettingsLayout from '@/layouts/settings/layout';
 import { type RegistrarAccount } from '@/types';
 import { Head, router, useForm } from '@inertiajs/react';
-import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Plus, Square, Trash2 } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 
 type AccountFormData = {
@@ -117,12 +126,7 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
                         </Button>
                     </div>
                     {pollMessage && <p className="text-sm text-amber-600 dark:text-amber-400">{pollMessage}</p>}
-                    <AccountDialog
-                        open={creating}
-                        onOpenChange={setCreating}
-                        title="Add registrar account"
-                        initial={empty}
-                    />
+                    <AccountDialog open={creating} onOpenChange={setCreating} title="Add registrar account" initial={empty} />
                     <div className="space-y-4">
                         {visibleAccounts.map((account) => (
                             <AccountCard account={account} key={account.id} />
@@ -137,14 +141,14 @@ export default function RegistrarAccounts({ accounts }: { accounts: RegistrarAcc
 function AccountCard({ account }: { account: RegistrarAccount }) {
     const [editing, setEditing] = useState(false);
     const deletion = useForm({});
+    const testStop = useForm({});
+    const syncStop = useForm({});
     const lastRun = account.sync_runs?.[0];
     const syncActive = Boolean(lastRun && ['QUEUED', 'RUNNING'].includes(lastRun.status));
     const testActive = ['QUEUED', 'RUNNING'].includes(account.last_test_status ?? '');
     const testProgressDelayed = testActive && Date.now() - new Date(account.updated_at).getTime() > 60 * 1000;
     const processedCount = lastRun ? lastRun.created_count + lastRun.updated_count + lastRun.unchanged_count : 0;
-    const progressDelayed = Boolean(
-        syncActive && lastRun?.updated_at && Date.now() - new Date(lastRun.updated_at).getTime() > 2 * 60 * 1000,
-    );
+    const progressDelayed = Boolean(syncActive && lastRun?.updated_at && Date.now() - new Date(lastRun.updated_at).getTime() > 2 * 60 * 1000);
     return (
         <Card>
             <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -173,8 +177,8 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                     </div>
                     {lastRun && (
                         <div className="md:col-span-2">
-                            <span className="text-muted-foreground">Latest run:</span> <StatusBadge status={lastRun.status} /> {processedCount} processed ·{' '}
-                            {lastRun.created_count} created · {lastRun.updated_count} updated · {lastRun.unchanged_count} unchanged ·{' '}
+                            <span className="text-muted-foreground">Latest run:</span> <StatusBadge status={lastRun.status} /> {processedCount}{' '}
+                            processed · {lastRun.created_count} created · {lastRun.updated_count} updated · {lastRun.unchanged_count} unchanged ·{' '}
                             {lastRun.failed_count} failed
                         </div>
                     )}
@@ -219,6 +223,21 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                     >
                         {testActive ? 'Testing…' : 'Test connection'}
                     </Button>
+                    {testActive && (
+                        <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={testStop.processing}
+                            onClick={() =>
+                                testStop.post(`/settings/registrar-accounts/${account.id}/test/stop`, {
+                                    preserveScroll: true,
+                                })
+                            }
+                        >
+                            <Square className="size-3 fill-current" />
+                            {testStop.processing ? 'Stopping…' : 'Stop test'}
+                        </Button>
+                    )}
                     <Button
                         size="sm"
                         variant="outline"
@@ -227,6 +246,21 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                     >
                         Synchronize
                     </Button>
+                    {syncActive && (
+                        <Button
+                            size="sm"
+                            variant="destructive"
+                            disabled={syncStop.processing}
+                            onClick={() =>
+                                syncStop.post(`/settings/registrar-accounts/${account.id}/sync/stop`, {
+                                    preserveScroll: true,
+                                })
+                            }
+                        >
+                            <Square className="size-3 fill-current" />
+                            {syncStop.processing ? 'Stopping…' : 'Stop sync'}
+                        </Button>
+                    )}
                     <Button size="sm" variant="outline" onClick={() => setEditing(!editing)}>
                         Edit
                     </Button>
@@ -241,9 +275,9 @@ function AccountCard({ account }: { account: RegistrarAccount }) {
                             <DialogHeader>
                                 <DialogTitle>Delete {account.label}?</DialogTitle>
                                 <DialogDescription>
-                                    This permanently deletes the registrar account and all {account.domains_count ?? 0} domains associated with it from
-                                    Nameshift. Related domain history will also be removed. The account at the registrar provider is not affected. This
-                                    action cannot be undone.
+                                    This permanently deletes the registrar account and all {account.domains_count ?? 0} domains associated with it
+                                    from Nameshift. Related domain history will also be removed. The account at the registrar provider is not
+                                    affected. This action cannot be undone.
                                 </DialogDescription>
                             </DialogHeader>
                             <DialogFooter>
@@ -306,12 +340,7 @@ function AccountDialog({
                     <DialogTitle>{title}</DialogTitle>
                     <DialogDescription>Configure the registrar account and its encrypted credential.</DialogDescription>
                 </DialogHeader>
-                <AccountEditor
-                    initial={initial}
-                    accountId={accountId}
-                    hasCredential={hasCredential}
-                    onSaved={() => onOpenChange(false)}
-                />
+                <AccountEditor initial={initial} accountId={accountId} hasCredential={hasCredential} onSaved={() => onOpenChange(false)} />
             </DialogContent>
         </Dialog>
     );
