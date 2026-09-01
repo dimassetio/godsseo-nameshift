@@ -4,7 +4,9 @@ namespace App\Registrars;
 
 use App\Enums\ErrorCategory;
 use App\Models\RegistrarAccount;
+use App\Registrars\Contracts\ProvidesRenewalPrices;
 use App\Registrars\Contracts\Registrar;
+use App\Registrars\Contracts\RequiresNameserverEnrichment;
 use App\Registrars\DTO\ChangeResult;
 use App\Registrars\DTO\ConnectionResult;
 use App\Registrars\DTO\DomainPage;
@@ -17,7 +19,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class InfomaniakRegistrar implements Registrar
+class InfomaniakRegistrar implements ProvidesRenewalPrices, Registrar, RequiresNameserverEnrichment
 {
     /** @var array<string, float|null> */
     private array $renewalPrices = [];
@@ -48,12 +50,11 @@ class InfomaniakRegistrar implements Registrar
             $tld = is_string($record['tld'] ?? null) ? strtolower($record['tld']) : NameserverSet::tld($name);
             $domains[] = new RemoteDomain(
                 name: $name,
-                nameservers: $this->getNameservers($name),
+                nameservers: [],
                 status: $expiresAt !== null && CarbonImmutable::parse($expiresAt)->isPast() ? 'EXPIRED' : 'ACTIVE',
                 tld: $tld,
                 registeredAt: $this->timestampValue($record['created_at'] ?? null),
                 expiresAt: $expiresAt,
-                renewalPrice: $this->renewalPrice($tld),
                 isLocked: $this->lockedValue($record),
                 privacyEnabled: $this->booleanValue($options['domain_privacy'] ?? null),
                 autoRenew: $this->autoRenewValue($record, $options),
@@ -64,6 +65,36 @@ class InfomaniakRegistrar implements Registrar
         $lastPage = $pagination['pages'] ?? $pagination['last_page'] ?? $payload['pages'] ?? null;
 
         return new DomainPage($domains, is_numeric($lastPage) && $page < (int) $lastPage ? $page + 1 : null);
+    }
+
+    public function renewalPrices(array $tlds): array
+    {
+        $prices = [];
+        $firstFailure = null;
+
+        foreach (array_unique($tlds) as $tld) {
+            try {
+                $price = $this->renewalPrice($tld);
+                if ($price !== null) {
+                    $prices[ltrim(strtolower(trim($tld)), '.')] = $price;
+                }
+            } catch (ProviderException $exception) {
+                $firstFailure ??= $exception;
+                Log::error('Infomaniak renewal price enrichment failed for a TLD.', [
+                    'registrar_account_id' => $this->account->id,
+                    'tld' => $tld,
+                    'error_category' => $exception->category->value,
+                    'provider_error_code' => $exception->providerCode,
+                    'message' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($prices === [] && $firstFailure instanceof ProviderException) {
+            throw $firstFailure;
+        }
+
+        return $prices;
     }
 
     public function getNameservers(string $domain): array

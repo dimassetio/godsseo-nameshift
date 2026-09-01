@@ -7,6 +7,9 @@ use App\Enums\RunStatus;
 use App\Models\Domain;
 use App\Models\RegistrarAccount;
 use App\Models\SyncRun;
+use App\Models\SyncRunEnrichment;
+use App\Registrars\Contracts\ProvidesRenewalPrices;
+use App\Registrars\Contracts\RequiresNameserverEnrichment;
 use App\Registrars\Exceptions\ProviderException;
 use App\Registrars\RegistrarFactory;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -89,6 +92,8 @@ class SyncRegistrarAccount implements ShouldQueue
         $counts = ['created_count' => 0, 'updated_count' => 0, 'unchanged_count' => 0, 'failed_count' => 0];
         try {
             $registrar = $factory->for($account);
+            $stagesNameservers = $registrar instanceof RequiresNameserverEnrichment;
+            $stagesRenewalPrices = $registrar instanceof ProvidesRenewalPrices;
             $page = 1;
             do {
                 if ($run->refresh()->status === RunStatus::Cancelled) {
@@ -110,33 +115,46 @@ class SyncRegistrarAccount implements ShouldQueue
 
                     $domain = Domain::firstOrNew(['registrar_account_id' => $account->id, 'name' => $remote->name]);
                     $new = ! $domain->exists;
-                    $domain->fill([
-                        'nameservers' => $remote->nameservers,
+                    $attributes = [
                         'remote_status' => $remote->status,
                         'tld' => $remote->tld,
-                        'renewal_price' => $remote->renewalPrice,
                         'registered_at' => $remote->registeredAt,
                         'expires_at' => $remote->expiresAt,
                         'is_locked' => $remote->isLocked,
                         'privacy_enabled' => $remote->privacyEnabled,
                         'auto_renew' => $remote->autoRenew,
                         'inventory_status' => InventoryStatus::Available,
-                        'last_seen_at' => now(), 'last_synced_at' => now(), 'nameservers_observed_at' => now(),
-                    ]);
-                    $changed = $domain->isDirty([
-                        'nameservers',
+                        'last_seen_at' => now(),
+                        'last_synced_at' => now(),
+                    ];
+                    $trackedAttributes = [
                         'remote_status',
                         'tld',
-                        'renewal_price',
                         'registered_at',
                         'expires_at',
                         'is_locked',
                         'privacy_enabled',
                         'auto_renew',
                         'inventory_status',
-                    ]);
+                    ];
+                    if ($stagesNameservers) {
+                        if ($new) {
+                            $attributes['nameservers'] = [];
+                        }
+                    } else {
+                        $attributes['nameservers'] = $remote->nameservers;
+                        $attributes['nameservers_observed_at'] = now();
+                        $trackedAttributes[] = 'nameservers';
+                    }
+                    if (! $stagesRenewalPrices) {
+                        $attributes['renewal_price'] = $remote->renewalPrice;
+                        $trackedAttributes[] = 'renewal_price';
+                    }
+
+                    $domain->fill($attributes);
+                    $changed = $domain->isDirty($trackedAttributes);
                     $domain->save();
-                    $seen[] = $domain->id;
+                    $seen[$domain->id] = true;
                     $counts[$new ? 'created_count' : ($changed ? 'updated_count' : 'unchanged_count')]++;
                 }
                 $page = $result->nextPage;
@@ -149,29 +167,82 @@ class SyncRegistrarAccount implements ShouldQueue
             } while ($page !== null);
 
             $processedCount = $counts['created_count'] + $counts['updated_count'] + $counts['unchanged_count'];
-            $completed = DB::transaction(function () use ($account, $counts, $processedCount, $run, $seen): bool {
+            $enrichments = DB::transaction(function () use ($account, $counts, $processedCount, $run, $seen, $stagesNameservers, $stagesRenewalPrices): ?array {
                 $lockedRun = SyncRun::query()->lockForUpdate()->findOrFail($run->id);
                 if ($lockedRun->status !== RunStatus::Running) {
-                    return false;
+                    return null;
                 }
 
-                $account->domains()->when($seen, fn ($query) => $query->whereNotIn('id', $seen))
+                $seenDomainIds = array_keys($seen);
+                $account->domains()->when($seenDomainIds, fn ($query) => $query->whereNotIn('id', $seenDomainIds))
                     ->update(['inventory_status' => InventoryStatus::Unavailable->value]);
+                $timestamp = now();
+                $rows = [];
+                if ($stagesRenewalPrices && $seenDomainIds !== []) {
+                    $rows[] = [
+                        'sync_run_id' => $lockedRun->id,
+                        'domain_id' => null,
+                        'task_key' => 'renewal-prices',
+                        'type' => SyncRunEnrichment::TYPE_RENEWAL_PRICES,
+                        'status' => SyncRunEnrichment::STATUS_QUEUED,
+                        'created_at' => $timestamp,
+                        'updated_at' => $timestamp,
+                    ];
+                }
+                if ($stagesNameservers) {
+                    foreach ($seenDomainIds as $domainId) {
+                        $rows[] = [
+                            'sync_run_id' => $lockedRun->id,
+                            'domain_id' => $domainId,
+                            'task_key' => 'nameservers:'.$domainId,
+                            'type' => SyncRunEnrichment::TYPE_NAMESERVERS,
+                            'status' => SyncRunEnrichment::STATUS_QUEUED,
+                            'created_at' => $timestamp,
+                            'updated_at' => $timestamp,
+                        ];
+                    }
+                }
+                if ($rows !== []) {
+                    SyncRunEnrichment::query()->insert($rows);
+                }
+
+                $hasEnrichments = $rows !== [];
                 $lockedRun->update(array_merge($counts, [
-                    'status' => RunStatus::Succeeded,
-                    'progress_message' => "Synchronization completed for {$processedCount} domains.",
-                    'completed_at' => now(),
+                    'status' => $hasEnrichments ? RunStatus::Running : RunStatus::Succeeded,
+                    'progress_message' => $hasEnrichments
+                        ? "Inventory saved for {$processedCount} domains. Waiting for ".count($rows).' detail tasks.'
+                        : "Synchronization completed for {$processedCount} domains.",
+                    'completed_at' => $hasEnrichments ? null : now(),
                 ]));
                 $account->update(['last_synced_at' => now()]);
 
-                return true;
+                return $hasEnrichments
+                    ? SyncRunEnrichment::query()
+                        ->where('sync_run_id', $lockedRun->id)
+                        ->get(['id', 'type'])
+                        ->map(fn (SyncRunEnrichment $enrichment): array => ['id' => $enrichment->id, 'type' => $enrichment->type])
+                        ->all()
+                    : [];
             });
 
-            if (! $completed) {
+            if ($enrichments === null) {
                 return;
             }
 
-            Log::info('Registrar synchronization completed.', ['sync_run_id' => $run->id, 'provider' => $account->provider->value, 'duration_ms' => (int) ((microtime(true) - $started) * 1000)] + $counts);
+            foreach ($enrichments as $enrichment) {
+                if ($enrichment['type'] === SyncRunEnrichment::TYPE_NAMESERVERS) {
+                    EnrichDomainNameservers::dispatch($enrichment['id'])->afterCommit();
+                } else {
+                    EnrichRegistrarRenewalPrices::dispatch($enrichment['id'])->afterCommit();
+                }
+            }
+
+            Log::info($enrichments === [] ? 'Registrar synchronization completed.' : 'Registrar inventory synchronization completed; enrichment queued.', [
+                'sync_run_id' => $run->id,
+                'provider' => $account->provider->value,
+                'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'enrichment_count' => count($enrichments),
+            ] + $counts);
         } catch (Throwable $exception) {
             if ($run->refresh()->status === RunStatus::Cancelled) {
                 return;

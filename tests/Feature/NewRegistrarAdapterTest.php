@@ -255,26 +255,26 @@ test('porkbun adapter uses paired headers and supported nameserver endpoints', f
 
     $registrar = new PorkbunRegistrar($account);
     $page = $registrar->listDomains();
+    $nameservers = $registrar->getNameservers('example.com');
     $registrar->setNameservers('example.com', ['ns3.example.com', 'ns4.example.com']);
 
-    expect($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
-        ->and($page->domains[1]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+    expect($page->domains[0]->nameservers)->toBe([])
+        ->and($page->domains[1]->nameservers)->toBe([])
+        ->and($nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeFalse();
     Http::assertSent(fn (Request $request): bool => $request->hasHeader('X-API-Key', 'public-key')
         && $request->hasHeader('X-Secret-API-Key', 'secret-key'));
     Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/updateNs/')
         && $request['ns'] === ['ns3.example.com', 'ns4.example.com']);
-    Http::assertSentCount(4);
+    Http::assertSentCount(3);
 });
 
-test('porkbun adapter recovers from an HTTP 503 nameserver lookup by retrying the domain', function () {
+test('porkbun adapter lists inventory without per-domain nameserver requests and fetches renewal prices once', function () {
     $account = registrarAccount(RegistrarProvider::Porkbun, RegistrarEnvironment::Production, [
         'api_key' => 'public-key',
         'secret_api_key' => 'secret-key',
     ]);
-    Sleep::fake();
-    Log::spy();
     Http::preventStrayRequests();
     Http::fake([
         'api.porkbun.com/api/json/v3/domain/listAll*' => Http::response([
@@ -282,29 +282,20 @@ test('porkbun adapter recovers from an HTTP 503 nameserver lookup by retrying th
             'total' => 1,
             'domains' => [['domain' => 'fastcredit24.com']],
         ]),
-        'api.porkbun.com/api/json/v3/domain/getNs/*' => Http::sequence()
-            ->push('<html><body>Service temporarily unavailable.</body></html>', 503, [
-                'Content-Type' => 'text/html',
-                'X-Request-Id' => 'edge-request-503',
-            ])
-            ->push(['status' => 'SUCCESS', 'ns' => ['ns1.example.com', 'ns2.example.com']]),
+        'api.porkbun.com/api/json/v3/pricing/get*' => Http::response([
+            'status' => 'SUCCESS',
+            'pricing' => ['com' => ['renewal' => '11.25'], 'net' => ['renewal' => '12.50']],
+        ]),
     ]);
 
-    $page = (new PorkbunRegistrar($account))->listDomains();
+    $registrar = new PorkbunRegistrar($account);
+    $page = $registrar->listDomains();
+    $prices = $registrar->renewalPrices(['com']);
 
-    expect($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com']);
-    Sleep::assertSequence([Sleep::for(1)->second()]);
-    Http::assertSentCount(3);
-    Log::shouldHaveReceived('warning')->once()->with(
-        'Retrying temporary Porkbun nameserver lookup failure.',
-        Mockery::on(fn (array $context): bool => $context['domain'] === 'fastcredit24.com'
-            && $context['attempt'] === 1
-            && $context['next_attempt'] === 2
-            && $context['retry_delay_seconds'] === 1
-            && $context['http_status'] === 503
-            && $context['request_id'] === 'edge-request-503'
-            && $context['response_body_excerpt'] === 'Service temporarily unavailable.'),
-    );
+    expect($page->domains[0]->nameservers)->toBe([])
+        ->and($prices)->toBe(['com' => 11.25]);
+    Http::assertSentCount(2);
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/domain/getNs/'));
 });
 
 test('porkbun adapter reports structured provider errors with actionable diagnostics', function () {
@@ -340,7 +331,7 @@ test('porkbun adapter reports structured provider errors with actionable diagnos
 
     $exception = null;
     try {
-        (new PorkbunRegistrar($account))->listDomains();
+        (new PorkbunRegistrar($account))->getNameservers('lgwinesmart-event.com');
     } catch (ProviderException $caught) {
         $exception = $caught;
     }
@@ -393,7 +384,7 @@ test('porkbun adapter logs an excerpt when the provider returns a non-json error
 
     $exception = null;
     try {
-        (new PorkbunRegistrar($account))->listDomains();
+        (new PorkbunRegistrar($account))->getNameservers('lgwinesmart-event.com');
     } catch (ProviderException $caught) {
         $exception = $caught;
     }
@@ -481,11 +472,15 @@ test('infomaniak adapter syncs official renewal and lock fields and updates name
 
     $registrar = new InfomaniakRegistrar($account);
     $page = $registrar->listDomains();
+    $nameservers = $registrar->getNameservers('example.com');
+    $renewalPrices = $registrar->renewalPrices(['com']);
     $result = $registrar->setNameservers('Example.COM', ['NS3.EXAMPLE.COM.', 'ns4.example.com']);
 
     expect($page->domains[0]->name)->toBe('example.com')
-        ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
-        ->and($page->domains[0]->renewalPrice)->toBe(13.6)
+        ->and($page->domains[0]->nameservers)->toBe([])
+        ->and($page->domains[0]->renewalPrice)->toBeNull()
+        ->and($nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
+        ->and($renewalPrices)->toBe(['com' => 13.6])
         ->and($page->domains[0]->isLocked)->toBeTrue()
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeFalse()

@@ -13,6 +13,7 @@ use App\Models\BulkChange;
 use App\Models\Domain;
 use App\Models\RegistrarAccount;
 use App\Models\SyncRun;
+use App\Models\SyncRunEnrichment;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
@@ -252,6 +253,12 @@ test('active connection tests and synchronizations can be stopped', function () 
         'status' => RunStatus::Queued,
         'progress_message' => 'Waiting for the registrar sync worker.',
     ]);
+    $enrichment = SyncRunEnrichment::create([
+        'sync_run_id' => $run->id,
+        'task_key' => 'renewal-prices',
+        'type' => SyncRunEnrichment::TYPE_RENEWAL_PRICES,
+        'status' => SyncRunEnrichment::STATUS_QUEUED,
+    ]);
 
     $this->actingAs($user)
         ->post("/settings/registrar-accounts/{$account->id}/test/stop")
@@ -265,6 +272,7 @@ test('active connection tests and synchronizations can be stopped', function () 
     expect($account->fresh()->last_test_status)->toBe(RegistrarConnectionStatus::Cancelled)
         ->and($account->fresh()->last_test_message)->toBe('Connection test stopped by user.')
         ->and($run->fresh()->status)->toBe(RunStatus::Cancelled)
+        ->and($enrichment->fresh()->status)->toBe(SyncRunEnrichment::STATUS_CANCELLED)
         ->and($run->fresh()->progress_message)->toBe('Synchronization stopped by user.')
         ->and($run->fresh()->completed_at)->not->toBeNull();
 

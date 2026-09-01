@@ -4,7 +4,9 @@ namespace App\Registrars;
 
 use App\Enums\ErrorCategory;
 use App\Models\RegistrarAccount;
+use App\Registrars\Contracts\ProvidesRenewalPrices;
 use App\Registrars\Contracts\Registrar;
+use App\Registrars\Contracts\RequiresNameserverEnrichment;
 use App\Registrars\DTO\ChangeResult;
 use App\Registrars\DTO\ConnectionResult;
 use App\Registrars\DTO\DomainPage;
@@ -13,25 +15,15 @@ use App\Registrars\Exceptions\ProviderException;
 use App\Services\NameserverSet;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use Throwable;
 
-class PorkbunRegistrar implements Registrar
+class PorkbunRegistrar implements ProvidesRenewalPrices, Registrar, RequiresNameserverEnrichment
 {
     private const PAGE_SIZE = 1000;
-
-    private const NAMESERVER_CONCURRENCY = 5;
-
-    private const NAMESERVER_BATCH_SIZE = 100;
-
-    private const NAMESERVER_MAX_ATTEMPTS = 3;
-
-    private const NAMESERVER_RETRY_DELAYS = [1, 3];
 
     public function __construct(private readonly RegistrarAccount $account) {}
 
@@ -47,15 +39,6 @@ class PorkbunRegistrar implements Registrar
         $start = max(0, $page - 1) * self::PAGE_SIZE;
         $data = $this->request('get', '/domain/listAll', ['start' => $start]);
         $records = is_array($data['domains'] ?? null) ? $data['domains'] : [];
-        $domainNames = [];
-
-        foreach ($records as $record) {
-            if (is_array($record)) {
-                $domainNames[] = NameserverSet::domain((string) ($record['domain'] ?? ''));
-            }
-        }
-
-        $nameserversByDomain = $this->nameserversFor($domainNames);
         $domains = [];
 
         foreach ($records as $record) {
@@ -65,7 +48,7 @@ class PorkbunRegistrar implements Registrar
             $name = NameserverSet::domain((string) ($record['domain'] ?? ''));
             $domains[] = new RemoteDomain(
                 name: $name,
-                nameservers: $nameserversByDomain[$name] ?? [],
+                nameservers: [],
                 status: is_string($record['status'] ?? null) ? strtoupper($record['status']) : 'ACTIVE',
                 tld: is_string($record['tld'] ?? null) ? strtolower($record['tld']) : NameserverSet::tld($name),
                 registeredAt: $this->dateValue($record['createDate'] ?? null),
@@ -82,6 +65,27 @@ class PorkbunRegistrar implements Registrar
             : count($domains) === self::PAGE_SIZE;
 
         return new DomainPage($domains, $hasNextPage ? $page + 1 : null);
+    }
+
+    public function renewalPrices(array $tlds): array
+    {
+        $payload = $this->request('get', '/pricing/get');
+        $pricing = is_array($payload['pricing'] ?? null) ? $payload['pricing'] : [];
+        $requestedTlds = array_fill_keys(array_map(
+            fn (string $tld): string => ltrim(strtolower(trim($tld)), '.'),
+            $tlds,
+        ), true);
+        $renewalPrices = [];
+
+        foreach ($pricing as $tld => $prices) {
+            $normalizedTld = ltrim(strtolower((string) $tld), '.');
+            $renewalPrice = is_array($prices) ? ($prices['renewal'] ?? null) : null;
+            if (isset($requestedTlds[$normalizedTld]) && is_numeric($renewalPrice)) {
+                $renewalPrices[$normalizedTld] = (float) $renewalPrice;
+            }
+        }
+
+        return $renewalPrices;
     }
 
     public function getNameservers(string $domain): array
@@ -115,112 +119,6 @@ class PorkbunRegistrar implements Registrar
         }
 
         return $this->payload($response, $path);
-    }
-
-    /**
-     * @param  list<string>  $domains
-     * @return array<string, list<string>>
-     */
-    private function nameserversFor(array $domains): array
-    {
-        $nameservers = [];
-
-        foreach (array_chunk($domains, self::NAMESERVER_BATCH_SIZE) as $domainBatch) {
-            $responses = $this->nameserverResponses($domainBatch);
-
-            foreach ($domainBatch as $domain) {
-                $response = $responses[$domain] ?? null;
-                if ($response instanceof Throwable) {
-                    throw new ProviderException(ErrorCategory::Network, "Unable to retrieve nameservers for {$domain} from Porkbun.");
-                }
-                if (! $response instanceof Response) {
-                    throw new ProviderException(ErrorCategory::ProviderTemporary, "Porkbun returned no nameserver response for {$domain}.");
-                }
-
-                try {
-                    $payload = $this->payload($response, '/domain/getNs/'.$domain);
-                } catch (ProviderException $exception) {
-                    throw new ProviderException(
-                        $exception->category,
-                        "Porkbun nameserver lookup failed for {$domain}: {$exception->getMessage()}",
-                        $exception->providerCode,
-                        $exception->retryAfter,
-                    );
-                }
-
-                $nameservers[$domain] = NameserverSet::normalize(is_array($payload['ns'] ?? null) ? $payload['ns'] : [], false);
-            }
-        }
-
-        return $nameservers;
-    }
-
-    /**
-     * @param  list<string>  $domains
-     * @return array<string, Response|Throwable>
-     */
-    private function nameserverResponses(array $domains): array
-    {
-        $completedResponses = [];
-        $pendingDomains = $domains;
-
-        for ($attempt = 1; $attempt <= self::NAMESERVER_MAX_ATTEMPTS && $pendingDomains !== []; $attempt++) {
-            $responses = Http::pool(fn (Pool $pool): array => array_map(
-                fn (string $domain) => $pool
-                    ->as($domain)
-                    ->withHeaders($this->authenticationHeaders())
-                    ->acceptJson()
-                    ->connectTimeout(10)
-                    ->timeout(30)
-                    ->get('https://api.porkbun.com/api/json/v3/domain/getNs/'.rawurlencode($domain)),
-                $pendingDomains,
-            ), self::NAMESERVER_CONCURRENCY);
-            $retryDomains = [];
-
-            foreach ($pendingDomains as $domain) {
-                $response = $responses[$domain] ?? null;
-                if ($attempt < self::NAMESERVER_MAX_ATTEMPTS && $this->isTemporaryNameserverFailure($response)) {
-                    $retryDomains[] = $domain;
-                    $this->logNameserverRetry($domain, $response, $attempt, self::NAMESERVER_RETRY_DELAYS[$attempt - 1]);
-
-                    continue;
-                }
-
-                $completedResponses[$domain] = $response instanceof Response || $response instanceof Throwable
-                    ? $response
-                    : new ProviderException(ErrorCategory::ProviderTemporary, "Porkbun returned no nameserver response for {$domain}.");
-            }
-
-            if ($retryDomains !== []) {
-                Sleep::for(self::NAMESERVER_RETRY_DELAYS[$attempt - 1])->seconds();
-            }
-
-            $pendingDomains = $retryDomains;
-        }
-
-        return $completedResponses;
-    }
-
-    private function isTemporaryNameserverFailure(mixed $response): bool
-    {
-        return $response instanceof Throwable
-            || ($response instanceof Response && ($response->status() === 429 || $response->serverError()));
-    }
-
-    private function logNameserverRetry(string $domain, mixed $response, int $attempt, int $delay): void
-    {
-        Log::warning('Retrying temporary Porkbun nameserver lookup failure.', [
-            'registrar_account_id' => $this->account->getKey(),
-            'domain' => $domain,
-            'attempt' => $attempt,
-            'next_attempt' => $attempt + 1,
-            'retry_delay_seconds' => $delay,
-            'http_status' => $response instanceof Response ? $response->status() : null,
-            'request_id' => $response instanceof Response ? $this->stringValue($response->header('X-Request-Id')) : null,
-            'content_type' => $response instanceof Response ? $this->stringValue($response->header('Content-Type')) : null,
-            'response_body_excerpt' => $response instanceof Response ? $this->responseExcerpt($response) : null,
-            'exception' => $response instanceof Throwable ? $response::class : null,
-        ]);
     }
 
     /** @return array<string, mixed> */

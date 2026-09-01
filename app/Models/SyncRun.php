@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\RunStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class SyncRun extends Model
 {
@@ -23,5 +24,10 @@ class SyncRun extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function enrichments(): HasMany
+    {
+        return $this->hasMany(SyncRunEnrichment::class);
     }
 }

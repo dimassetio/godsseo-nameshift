@@ -10,6 +10,7 @@ use App\Jobs\TestRegistrarConnection;
 use App\Models\BulkChangeItem;
 use App\Models\RegistrarAccount;
 use App\Models\SyncRun;
+use App\Models\SyncRunEnrichment;
 use App\Services\Audit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -147,6 +148,13 @@ class RegistrarAccountController extends Controller
         if ($stopped === 0) {
             return back()->withErrors(['sync' => 'The synchronization already finished before it could be stopped.']);
         }
+
+        $run->enrichments()
+            ->whereIn('status', [SyncRunEnrichment::STATUS_QUEUED, SyncRunEnrichment::STATUS_RUNNING])
+            ->update([
+                'status' => SyncRunEnrichment::STATUS_CANCELLED,
+                'completed_at' => now(),
+            ]);
 
         Audit::record('registrar_account.sync_cancelled', $registrarAccount, ['sync_run_id' => $run->id]);
 
