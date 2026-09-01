@@ -19,16 +19,23 @@ test('namesilo adapter lists domains and changes nameservers', function () {
     $account = registrarAccount(RegistrarProvider::NameSilo, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
     Http::preventStrayRequests();
     Http::fake([
-        'sandbox.namesilo.com/api/listDomains*' => Http::response(['reply' => ['code' => 300, 'domains' => ['Example.COM'], 'totalDomains' => 1]]),
+        'sandbox.namesilo.com/api/listDomains*' => Http::response(['reply' => [
+            'code' => 300,
+            'domains' => ['domain' => [['domain' => 'Example.COM']]],
+            'totalDomains' => 1,
+        ]]),
         'sandbox.namesilo.com/api/getDomainInfo*' => Http::response(['reply' => [
             'code' => 300,
             'status' => 'Active',
             'created' => '2024-01-01',
             'expires' => '2027-01-01',
-            'locked' => 1,
-            'private' => 1,
-            'auto_renew' => 0,
-            'nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com'],
+            'locked' => ['value' => 1],
+            'private' => ['value' => 1],
+            'auto_renew' => ['value' => 0],
+            'nameservers' => [
+                ['nameserver' => 'NS1.EXAMPLE.COM.'],
+                ['nameserver' => 'ns2.example.com'],
+            ],
         ]]),
         'sandbox.namesilo.com/api/changeNameServers*' => Http::response(['reply' => ['code' => 300, 'detail' => 'success']]),
     ]);

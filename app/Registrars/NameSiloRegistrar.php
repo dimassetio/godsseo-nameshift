@@ -32,26 +32,15 @@ class NameSiloRegistrar implements Registrar
     public function listDomains(int $page = 1): DomainPage
     {
         $reply = $this->request('listDomains', ['page' => $page, 'pageSize' => self::PAGE_SIZE]);
-        $domainNames = $reply['domains'] ?? [];
-        if (is_array($domainNames) && isset($domainNames['domain'])) {
-            $domainNames = $domainNames['domain'];
-        }
-        if (is_string($domainNames)) {
-            $domainNames = [$domainNames];
-        }
+        $domainNames = $this->domainNamesFrom($reply['domains'] ?? []);
 
         $domains = [];
-        foreach (is_array($domainNames) ? $domainNames : [] as $domainName) {
-            $name = NameserverSet::domain(is_array($domainName) ? (string) ($domainName['domain'] ?? $domainName['name'] ?? '') : (string) $domainName);
+        foreach ($domainNames as $name) {
             $details = $this->request('getDomainInfo', ['domain' => $name]);
-            $nameservers = $details['nameservers'] ?? $details['name_servers'] ?? [];
-            if (is_array($nameservers) && isset($nameservers['nameserver'])) {
-                $nameservers = $nameservers['nameserver'];
-            }
 
             $domains[] = new RemoteDomain(
                 name: $name,
-                nameservers: NameserverSet::normalize(is_array($nameservers) ? array_values($nameservers) : [], false),
+                nameservers: $this->nameserversFrom($details['nameservers'] ?? $details['name_servers'] ?? []),
                 status: $this->stringValue($details, ['status']),
                 tld: NameserverSet::tld($name),
                 registeredAt: $this->stringValue($details, ['created', 'created_at']),
@@ -73,12 +62,8 @@ class NameSiloRegistrar implements Registrar
     public function getNameservers(string $domain): array
     {
         $reply = $this->request('getDomainInfo', ['domain' => NameserverSet::domain($domain)]);
-        $nameservers = $reply['nameservers'] ?? $reply['name_servers'] ?? [];
-        if (is_array($nameservers) && isset($nameservers['nameserver'])) {
-            $nameservers = $nameservers['nameserver'];
-        }
 
-        return NameserverSet::normalize(is_array($nameservers) ? array_values($nameservers) : [], false);
+        return $this->nameserversFrom($reply['nameservers'] ?? $reply['name_servers'] ?? []);
     }
 
     public function setNameservers(string $domain, array $nameservers): ChangeResult
@@ -115,7 +100,7 @@ class NameSiloRegistrar implements Registrar
             throw new ProviderException(ErrorCategory::ProviderTemporary, 'NameSilo returned an invalid response.');
         }
 
-        $code = isset($reply['code']) ? (string) $reply['code'] : null;
+        $code = $this->scalarString($reply['code'] ?? null);
         if ($code !== '300') {
             $message = is_string($reply['detail'] ?? null) ? $reply['detail'] : 'NameSilo rejected the request.';
             $category = match ($code) {
@@ -164,10 +149,88 @@ class NameSiloRegistrar implements Registrar
 
     private function booleanValue(mixed $value): ?bool
     {
-        return match (strtoupper(trim((string) $value))) {
+        $value = $this->scalarString($value);
+        if ($value === null) {
+            return null;
+        }
+
+        return match (strtoupper(trim($value))) {
             '1', 'TRUE', 'YES', 'ENABLED', 'ACTIVE' => true,
             '0', 'FALSE', 'NO', 'DISABLED', 'INACTIVE' => false,
-            default => is_bool($value) ? $value : null,
+            default => null,
         };
+    }
+
+    /** @return list<string> */
+    private function domainNamesFrom(mixed $value): array
+    {
+        $domainName = $this->scalarString($value);
+        if ($domainName !== null) {
+            return [NameserverSet::domain($domainName)];
+        }
+        if (! is_array($value)) {
+            return [];
+        }
+
+        foreach (['domains', 'domain'] as $key) {
+            if (array_key_exists($key, $value)) {
+                return $this->domainNamesFrom($value[$key]);
+            }
+        }
+
+        $domainNames = [];
+        foreach ($value as $domain) {
+            $domainNames = [...$domainNames, ...$this->domainNamesFrom($domain)];
+        }
+
+        return array_values(array_unique(array_filter($domainNames)));
+    }
+
+    /** @return list<string> */
+    private function nameserversFrom(mixed $value): array
+    {
+        $nameserver = $this->scalarString($value);
+        if ($nameserver !== null) {
+            return NameserverSet::normalize([$nameserver], false);
+        }
+        if (! is_array($value)) {
+            return [];
+        }
+
+        foreach (['nameservers', 'name_servers', 'nameserver', 'name_server', 'host', 'hostname'] as $key) {
+            if (array_key_exists($key, $value)) {
+                return $this->nameserversFrom($value[$key]);
+            }
+        }
+
+        $nameservers = [];
+        foreach ($value as $key => $item) {
+            if (is_int($key) || preg_match('/^ns\d+$/i', (string) $key) === 1) {
+                $nameservers = [...$nameservers, ...$this->nameserversFrom($item)];
+            }
+        }
+
+        return NameserverSet::normalize($nameservers, false);
+    }
+
+    private function scalarString(mixed $value): ?string
+    {
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+        if (is_string($value) || is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+        if (! is_array($value)) {
+            return null;
+        }
+
+        foreach (['value', 'content', '#text', '_'] as $key) {
+            if (array_key_exists($key, $value)) {
+                return $this->scalarString($value[$key]);
+            }
+        }
+
+        return count($value) === 1 ? $this->scalarString(reset($value)) : null;
     }
 }
