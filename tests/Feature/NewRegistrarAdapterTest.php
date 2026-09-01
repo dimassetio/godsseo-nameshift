@@ -20,12 +20,12 @@ test('namesilo adapter lists domains and changes nameservers', function () {
     $account = registrarAccount(RegistrarProvider::NameSilo, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
     Http::preventStrayRequests();
     Http::fake([
-        'sandbox.namesilo.com/api/listDomains*' => Http::response(['reply' => [
+        'sandbox.namesilo.com/apibatch/listDomains*' => Http::response(['reply' => [
             'code' => 300,
             'domains' => ['domain' => [['domain' => 'Example.COM']]],
             'totalDomains' => 1,
         ]]),
-        'sandbox.namesilo.com/api/getDomainInfo*' => Http::response(['reply' => [
+        'sandbox.namesilo.com/apibatch/getDomainInfo*' => Http::response(['reply' => [
             'code' => 300,
             'status' => 'Active',
             'created' => '2024-01-01',
@@ -38,11 +38,18 @@ test('namesilo adapter lists domains and changes nameservers', function () {
                 ['nameserver' => 'ns2.example.com'],
             ],
         ]]),
+        'sandbox.namesilo.com/apibatch/getPrices*' => Http::response(['reply' => [
+            'code' => 300,
+            'detail' => 'success',
+            'com' => ['registration' => 10.00, 'transfer' => 10.40, 'renew' => 11.95],
+            'net' => ['registration' => 11.85, 'transfer' => 11.35, 'renew' => 11.85],
+        ]]),
         'sandbox.namesilo.com/api/changeNameServers*' => Http::response(['reply' => ['code' => 300, 'detail' => 'success']]),
     ]);
 
     $registrar = new NameSiloRegistrar($account);
     $page = $registrar->listDomains();
+    $renewalPrices = $registrar->renewalPrices(['com']);
     $change = $registrar->setNameservers('example.com', ['NS3.EXAMPLE.COM.', 'ns4.example.com']);
 
     expect($page->domains[0]->name)->toBe('example.com')
@@ -51,10 +58,37 @@ test('namesilo adapter lists domains and changes nameservers', function () {
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeFalse()
         ->and($page->nextPage)->toBeNull()
+        ->and($renewalPrices)->toBe(['com' => 11.95])
         ->and($change->accepted)->toBeTrue();
+    Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/apibatch/getPrices')
+        && $request['type'] === 'json'
+        && $request['version'] === 1);
     Http::assertSent(fn (Request $request): bool => str_contains($request->url(), 'changeNameServers')
         && $request->data()['ns1'] === 'ns3.example.com'
         && $request->data()['ns2'] === 'ns4.example.com');
+});
+
+test('namesilo adapter preserves missing renewal prices and logs their tlds', function () {
+    $account = registrarAccount(RegistrarProvider::NameSilo, RegistrarEnvironment::Sandbox, ['api_key' => 'key']);
+    Log::spy();
+    Http::preventStrayRequests();
+    Http::fake([
+        'sandbox.namesilo.com/apibatch/getPrices*' => Http::response(['reply' => [
+            'code' => 300,
+            'detail' => 'success',
+            'com' => ['renew' => '11.95'],
+            'xyz' => ['renew' => 'not-available'],
+        ]]),
+    ]);
+
+    $renewalPrices = (new NameSiloRegistrar($account))->renewalPrices(['com', 'xyz', 'missing']);
+
+    expect($renewalPrices)->toBe(['com' => 11.95]);
+    Log::shouldHaveReceived('warning')->once()->with(
+        'NameSilo renewal prices were missing from the pricing response.',
+        Mockery::on(fn (array $context): bool => $context['registrar_account_id'] === $account->id
+            && $context['tlds'] === ['xyz', 'missing']),
+    );
 });
 
 test('dynadot adapter follows api3 pagination and nameserver commands', function () {
@@ -408,6 +442,7 @@ test('spaceship adapter maps embedded nameservers and updates custom hosts', fun
         'api_key' => 'public-key',
         'api_secret' => 'secret-key',
     ]);
+    config()->set('services.spaceship.pricing_reader_url', 'https://pricing-reader.test/http://www.spaceship.com');
     Http::preventStrayRequests();
     Http::fake([
         'spaceship.dev/api/v1/domains?*' => Http::response(['total' => 1, 'items' => [[
@@ -415,28 +450,61 @@ test('spaceship adapter maps embedded nameservers and updates custom hosts', fun
             'autoRenew' => true,
             'registrationDate' => '2024-01-01T00:00:00Z',
             'expirationDate' => '2027-01-01T00:00:00Z',
-            'renewalPrice' => ['amount' => '9.98', 'currency' => 'USD'],
             'lifecycleStatus' => 'active',
             'eppStatuses' => ['clientTransferProhibited'],
             'privacyProtection' => ['level' => 'high'],
             'nameservers' => ['provider' => 'custom', 'hosts' => ['NS1.EXAMPLE.COM.', 'ns2.example.com']],
         ]]]),
         'spaceship.dev/api/v1/domains/*/nameservers' => Http::response([], 204),
+        'pricing-reader.test/http://www.spaceship.com/domains/gtld/com/' => Http::response(<<<'MARKDOWN'
+            | .com | 1 year | 2 years |
+            | --- | --- | --- |
+            | Register | $8.88/yr | $18.54/yr |
+            | Renew | $9.98/yr | $19.96/yr |
+            MARKDOWN),
     ]);
 
     $registrar = new SpaceshipRegistrar($account);
     $page = $registrar->listDomains();
+    $renewalPrices = $registrar->renewalPrices(['.COM']);
+    $cachedRenewalPrices = $registrar->renewalPrices(['com']);
     $registrar->setNameservers('example.com', ['ns3.example.com', 'ns4.example.com']);
 
     expect($page->domains[0]->status)->toBe('ACTIVE')
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
-        ->and($page->domains[0]->renewalPrice)->toBe(9.98)
+        ->and($page->domains[0]->renewalPrice)->toBeNull()
+        ->and($renewalPrices)->toBe(['com' => 9.98])
+        ->and($cachedRenewalPrices)->toBe(['com' => 9.98])
         ->and($page->domains[0]->isLocked)->toBeTrue()
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeTrue();
     Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
         && $request['provider'] === 'custom'
         && $request['hosts'] === ['ns3.example.com', 'ns4.example.com']);
+    Http::assertSentCount(3);
+});
+
+test('spaceship adapter keeps successful renewal prices when another tld pricing page fails', function () {
+    $account = registrarAccount(RegistrarProvider::Spaceship, RegistrarEnvironment::Production, [
+        'api_key' => 'public-key',
+        'api_secret' => 'secret-key',
+    ]);
+    config()->set('services.spaceship.pricing_reader_url', 'https://pricing-reader.test/http://www.spaceship.com');
+    Log::spy();
+    Http::preventStrayRequests();
+    Http::fake([
+        'pricing-reader.test/http://www.spaceship.com/domains/gtld/com/' => Http::response("Renew\n\n\$9.98/yr"),
+        'pricing-reader.test/http://www.spaceship.com/domains/cctld/co-uk/' => Http::response('Pricing unavailable', 503),
+    ]);
+
+    $renewalPrices = (new SpaceshipRegistrar($account))->renewalPrices(['com', 'co.uk']);
+
+    expect($renewalPrices)->toBe(['com' => 9.98]);
+    Log::shouldHaveReceived('warning')->once()->with(
+        'Spaceship renewal prices were missing from the public pricing source.',
+        Mockery::on(fn (array $context): bool => $context['registrar_account_id'] === $account->id
+            && $context['failures'] === ['co.uk' => 'HTTP 503']),
+    );
 });
 
 test('infomaniak adapter syncs official renewal and lock fields and updates nameservers', function () {

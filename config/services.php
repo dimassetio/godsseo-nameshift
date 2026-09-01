@@ -2,6 +2,10 @@
 
 return [
 
+    'spaceship' => [
+        'pricing_reader_url' => env('SPACESHIP_PRICING_READER_URL', 'https://r.jina.ai/http://www.spaceship.com'),
+    ],
+
     'zcom' => [
         'enabled' => env('ZCOM_AUTOMATION_ENABLED', false),
         'login_url' => env('ZCOM_LOGIN_URL', 'https://my.web.z.com/index.php?rp=/login'),

@@ -21,6 +21,7 @@ use App\Registrars\DTO\RemoteDomain;
 use App\Registrars\Exceptions\ProviderException;
 use App\Registrars\RegistrarFactory;
 use App\Services\CompleteSyncRunEnrichment;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
 test('synchronization follows pagination and persists normalized inventory', function () {
@@ -232,4 +233,78 @@ test('failed nameserver enrichment preserves saved inventory and records the exa
         ->and($run->fresh()->status)->toBe(RunStatus::Succeeded)
         ->and($run->fresh()->failed_count)->toBe(1)
         ->and($run->fresh()->error_message)->toContain('fastcredit24.com');
+});
+
+test('namesilo synchronization enriches renewal prices once by tld after saving inventory', function () {
+    Queue::fake();
+    Http::preventStrayRequests();
+    Http::fake([
+        'sandbox.namesilo.com/apibatch/listDomains*' => Http::response(['reply' => [
+            'code' => 300,
+            'domains' => ['domain' => [['domain' => 'first-example.com'], ['domain' => 'second-example.com']]],
+            'totalDomains' => 2,
+        ]]),
+        'sandbox.namesilo.com/apibatch/getDomainInfo*' => Http::response(['reply' => [
+            'code' => 300,
+            'status' => 'Active',
+            'nameservers' => ['ns1.example.com', 'ns2.example.com'],
+        ]]),
+        'sandbox.namesilo.com/apibatch/getPrices*' => Http::response(['reply' => [
+            'code' => 300,
+            'detail' => 'success',
+            'com' => ['registration' => 10.00, 'transfer' => 10.40, 'renew' => 11.95],
+        ]]),
+    ]);
+    $account = RegistrarAccount::create(['provider' => RegistrarProvider::NameSilo, 'environment' => RegistrarEnvironment::Sandbox, 'label' => 'NameSilo staged prices', 'username' => 'user', 'credentials' => ['api_key' => 'key'], 'is_active' => true]);
+    $run = SyncRun::create(['registrar_account_id' => $account->id, 'status' => RunStatus::Queued]);
+    $factory = app(RegistrarFactory::class);
+
+    (new SyncRegistrarAccount($run->id))->handle($factory);
+
+    $enrichment = $run->enrichments()->where('type', SyncRunEnrichment::TYPE_RENEWAL_PRICES)->firstOrFail();
+    expect($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and($account->domains()->pluck('renewal_price')->filter()->all())->toBe([]);
+    Queue::assertPushed(EnrichRegistrarRenewalPrices::class, 1);
+
+    (new EnrichRegistrarRenewalPrices($enrichment->id))->handle($factory, app(CompleteSyncRunEnrichment::class));
+
+    expect($run->fresh()->status)->toBe(RunStatus::Succeeded)
+        ->and($account->domains()->pluck('renewal_price')->all())->toBe(['11.95', '11.95']);
+    Http::assertSentCount(4);
+});
+
+test('spaceship synchronization enriches renewal prices after saving its inventory', function () {
+    Queue::fake();
+    config()->set('services.spaceship.pricing_reader_url', 'https://pricing-reader.test/http://www.spaceship.com');
+    Http::preventStrayRequests();
+    Http::fake([
+        'spaceship.dev/api/v1/domains?*' => Http::response(['total' => 1, 'items' => [[
+            'name' => 'example.com',
+            'lifecycleStatus' => 'active',
+            'expirationDate' => '2027-01-01T00:00:00Z',
+        ]]]),
+        'pricing-reader.test/http://www.spaceship.com/domains/gtld/com/' => Http::response("Renew\n\n\$9.98/yr"),
+    ]);
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::Spaceship,
+        'environment' => RegistrarEnvironment::Production,
+        'label' => 'Spaceship staged prices',
+        'username' => 'user',
+        'credentials' => ['api_key' => 'key', 'api_secret' => 'secret'],
+        'is_active' => true,
+    ]);
+    $run = SyncRun::create(['registrar_account_id' => $account->id, 'status' => RunStatus::Queued]);
+    $factory = app(RegistrarFactory::class);
+
+    (new SyncRegistrarAccount($run->id))->handle($factory);
+
+    $enrichment = $run->enrichments()->where('type', SyncRunEnrichment::TYPE_RENEWAL_PRICES)->firstOrFail();
+    expect($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and($account->domains()->firstOrFail()->renewal_price)->toBeNull();
+    Queue::assertPushed(EnrichRegistrarRenewalPrices::class, 1);
+
+    (new EnrichRegistrarRenewalPrices($enrichment->id))->handle($factory, app(CompleteSyncRunEnrichment::class));
+
+    expect($account->domains()->firstOrFail()->renewal_price)->toBe('9.98')
+        ->and($run->fresh()->status)->toBe(RunStatus::Succeeded);
 });

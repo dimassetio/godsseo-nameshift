@@ -5,4 +5,4 @@ Before planning or editing, find the row whose globs match the file's path and r
 | Applies to | Rule file |
 | --- | --- |
 | app/{Jobs,Registrars,Services}/**/*.php | .ai/rules/jobs-registrars-services.md |
-| app/Registrars/InfomaniakRegistrar.php | .ai/rules/registrars.md |
+| app/Registrars/InfomaniakRegistrar.php, app/Registrars/NameSiloRegistrar.php, app/Registrars/SpaceshipRegistrar.php | .ai/rules/registrars.md |

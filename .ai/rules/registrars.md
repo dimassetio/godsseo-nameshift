@@ -1,6 +1,8 @@
 ---
 paths:
   - app/Registrars/InfomaniakRegistrar.php
+  - app/Registrars/NameSiloRegistrar.php
+  - app/Registrars/SpaceshipRegistrar.php
 ---
 
 # Registrars
@@ -16,3 +18,9 @@ Superseded: this is no longer true. Infomaniak now officially supports registrar
 
 ## Active Infomaniak integration rule
 This rule supersedes every earlier statement that Infomaniak nameserver writes are unsupported. Use PUT /2/domains/domains/{domain}/nameservers for delegation updates, GET /2/zones/{domain} for nameserver reads, and Infomaniak's public /api-g/tldprice endpoint for cached per-TLD renewal prices.
+
+## Use NameSilo batch pricing endpoints
+Automated NameSilo inventory and pricing requests must use /apibatch. Fetch account-adjusted renewal prices once with getPrices and map reply.{tld}.renew through ProvidesRenewalPrices; do not clear an existing renewal_price when a TLD is absent or non-numeric.
+
+## Spaceship renewal prices use staged public pricing enrichment
+Spaceship's authenticated domain list/detail API does not expose standard renewal prices. Keep Spaceship on ProvidesRenewalPrices and resolve each unique TLD from the configurable public pricing reader after inventory is saved. Partial pricing failures must preserve existing renewal_price values and log the affected TLD plus the concrete failure.

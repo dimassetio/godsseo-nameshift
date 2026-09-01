@@ -4,6 +4,7 @@ namespace App\Registrars;
 
 use App\Enums\ErrorCategory;
 use App\Models\RegistrarAccount;
+use App\Registrars\Contracts\ProvidesRenewalPrices;
 use App\Registrars\Contracts\Registrar;
 use App\Registrars\DTO\ChangeResult;
 use App\Registrars\DTO\ConnectionResult;
@@ -12,12 +13,19 @@ use App\Registrars\DTO\RemoteDomain;
 use App\Registrars\Exceptions\ProviderException;
 use App\Services\NameserverSet;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
-class SpaceshipRegistrar implements Registrar
+class SpaceshipRegistrar implements ProvidesRenewalPrices, Registrar
 {
     private const PAGE_SIZE = 100;
+
+    private const PRICING_CONCURRENCY = 5;
+
+    private const PRICING_CACHE_HOURS = 6;
 
     public function __construct(private readonly RegistrarAccount $account) {}
 
@@ -40,6 +48,78 @@ class SpaceshipRegistrar implements Registrar
             : count($domains) === self::PAGE_SIZE;
 
         return new DomainPage($domains, $hasNextPage ? $page + 1 : null);
+    }
+
+    public function renewalPrices(array $tlds): array
+    {
+        $requestedTlds = array_values(array_unique(array_filter(array_map(
+            fn (string $tld): string => ltrim(strtolower(trim($tld)), '.'),
+            $tlds,
+        ))));
+        if ($requestedTlds === []) {
+            return [];
+        }
+
+        $renewalPrices = [];
+        $uncachedTlds = [];
+        foreach ($requestedTlds as $tld) {
+            $cachedPrice = Cache::get($this->pricingCacheKey($tld));
+            if (is_numeric($cachedPrice)) {
+                $renewalPrices[$tld] = (float) $cachedPrice;
+            } else {
+                $uncachedTlds[] = $tld;
+            }
+        }
+        if ($uncachedTlds === []) {
+            return $renewalPrices;
+        }
+
+        try {
+            $responses = Http::pool(fn (Pool $pool): array => array_map(
+                fn (string $tld) => $pool
+                    ->as($tld)
+                    ->accept('text/plain')
+                    ->connectTimeout(10)
+                    ->timeout(30)
+                    ->get($this->pricingUrl($tld)),
+                $uncachedTlds,
+            ), concurrency: self::PRICING_CONCURRENCY);
+        } catch (ConnectionException) {
+            throw new ProviderException(ErrorCategory::Network, 'Unable to connect to the Spaceship renewal pricing source.');
+        }
+
+        $failures = [];
+        foreach ($uncachedTlds as $tld) {
+            $response = $responses[$tld] ?? null;
+            if (! $response instanceof Response || ! $response->successful()) {
+                $failures[$tld] = $response instanceof Response ? 'HTTP '.$response->status() : 'connection failure';
+
+                continue;
+            }
+
+            $renewalPrice = $this->renewalPriceFromPricingPage($response->body());
+            if ($renewalPrice === null) {
+                $failures[$tld] = 'renewal price was not present in the response';
+
+                continue;
+            }
+
+            $renewalPrices[$tld] = $renewalPrice;
+            Cache::put($this->pricingCacheKey($tld), $renewalPrice, now()->addHours(self::PRICING_CACHE_HOURS));
+        }
+
+        if ($failures !== []) {
+            Log::warning('Spaceship renewal prices were missing from the public pricing source.', [
+                'registrar_account_id' => $this->account->id,
+                'failures' => $failures,
+            ]);
+        }
+
+        if ($renewalPrices === [] && $this->hasTemporaryPricingFailure($responses)) {
+            throw new ProviderException(ErrorCategory::ProviderTemporary, 'Spaceship renewal pricing is temporarily unavailable.');
+        }
+
+        return $renewalPrices;
     }
 
     public function getNameservers(string $domain): array
@@ -97,6 +177,50 @@ class SpaceshipRegistrar implements Registrar
         }
 
         return null;
+    }
+
+    private function pricingUrl(string $tld): string
+    {
+        $labels = explode('.', $tld);
+        $category = strlen((string) end($labels)) === 2 ? 'cctld' : 'gtld';
+        $slug = str_replace('.', '-', $tld);
+        $baseUrl = rtrim((string) config('services.spaceship.pricing_reader_url'), '/');
+
+        return "{$baseUrl}/domains/{$category}/{$slug}/";
+    }
+
+    private function pricingCacheKey(string $tld): string
+    {
+        return 'spaceship:renewal-price:'.sha1((string) config('services.spaceship.pricing_reader_url')).':'.$tld;
+    }
+
+    private function renewalPriceFromPricingPage(string $content): ?float
+    {
+        $normalizedContent = html_entity_decode(strip_tags($content), ENT_QUOTES | ENT_HTML5);
+        $patterns = [
+            '/\|\s*Renew\s*\|\s*(?:US)?\$\s*([\d,]+(?:\.\d+)?)\s*\/yr\s*\|/i',
+            '/\bRenew\s+(?:US)?\$\s*([\d,]+(?:\.\d+)?)\s*\/yr\b/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $normalizedContent, $matches) === 1) {
+                return (float) str_replace(',', '', $matches[1]);
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $responses */
+    private function hasTemporaryPricingFailure(array $responses): bool
+    {
+        foreach ($responses as $response) {
+            if (! $response instanceof Response || $response->status() === 429 || $response->serverError()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function priceValue(mixed $value): ?float

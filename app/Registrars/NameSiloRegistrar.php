@@ -5,6 +5,7 @@ namespace App\Registrars;
 use App\Enums\ErrorCategory;
 use App\Enums\RegistrarEnvironment;
 use App\Models\RegistrarAccount;
+use App\Registrars\Contracts\ProvidesRenewalPrices;
 use App\Registrars\Contracts\Registrar;
 use App\Registrars\DTO\ChangeResult;
 use App\Registrars\DTO\ConnectionResult;
@@ -15,8 +16,9 @@ use App\Services\NameserverSet;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
-class NameSiloRegistrar implements Registrar
+class NameSiloRegistrar implements ProvidesRenewalPrices, Registrar
 {
     private const PAGE_SIZE = 1000;
 
@@ -31,12 +33,12 @@ class NameSiloRegistrar implements Registrar
 
     public function listDomains(int $page = 1): DomainPage
     {
-        $reply = $this->request('listDomains', ['page' => $page, 'pageSize' => self::PAGE_SIZE]);
+        $reply = $this->request('listDomains', ['page' => $page, 'pageSize' => self::PAGE_SIZE], batch: true);
         $domainNames = $this->domainNamesFrom($reply['domains'] ?? []);
 
         $domains = [];
         foreach ($domainNames as $name) {
-            $details = $this->request('getDomainInfo', ['domain' => $name]);
+            $details = $this->request('getDomainInfo', ['domain' => $name], batch: true);
 
             $domains[] = new RemoteDomain(
                 name: $name,
@@ -59,6 +61,34 @@ class NameSiloRegistrar implements Registrar
         return new DomainPage($domains, $hasNextPage ? $page + 1 : null);
     }
 
+    public function renewalPrices(array $tlds): array
+    {
+        $reply = $this->request('getPrices', batch: true);
+        $requestedTlds = array_fill_keys(array_map(
+            fn (string $tld): string => ltrim(strtolower(trim($tld)), '.'),
+            $tlds,
+        ), true);
+        $renewalPrices = [];
+
+        foreach ($reply as $tld => $prices) {
+            $normalizedTld = ltrim(strtolower((string) $tld), '.');
+            $renewalPrice = is_array($prices) ? $this->scalarString($prices['renew'] ?? null) : null;
+            if (isset($requestedTlds[$normalizedTld]) && is_numeric($renewalPrice)) {
+                $renewalPrices[$normalizedTld] = (float) $renewalPrice;
+            }
+        }
+
+        $missingTlds = array_values(array_diff(array_keys($requestedTlds), array_keys($renewalPrices)));
+        if ($missingTlds !== []) {
+            Log::warning('NameSilo renewal prices were missing from the pricing response.', [
+                'registrar_account_id' => $this->account->id,
+                'tlds' => $missingTlds,
+            ]);
+        }
+
+        return $renewalPrices;
+    }
+
     public function getNameservers(string $domain): array
     {
         $reply = $this->request('getDomainInfo', ['domain' => NameserverSet::domain($domain)]);
@@ -78,11 +108,12 @@ class NameSiloRegistrar implements Registrar
     }
 
     /** @return array<string, mixed> */
-    private function request(string $operation, array $parameters = []): array
+    private function request(string $operation, array $parameters = [], bool $batch = false): array
     {
-        $baseUrl = $this->account->environment === RegistrarEnvironment::Sandbox
-            ? 'https://sandbox.namesilo.com/api'
-            : 'https://www.namesilo.com/api';
+        $host = $this->account->environment === RegistrarEnvironment::Sandbox
+            ? 'https://sandbox.namesilo.com'
+            : 'https://www.namesilo.com';
+        $baseUrl = $host.($batch ? '/apibatch' : '/api');
 
         try {
             $response = Http::acceptJson()->connectTimeout(10)->timeout(30)->get("{$baseUrl}/{$operation}", array_merge([
