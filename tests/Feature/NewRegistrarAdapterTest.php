@@ -13,6 +13,7 @@ use App\Registrars\RegistrarFactory;
 use App\Registrars\SpaceshipRegistrar;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Sleep;
 
 test('namesilo adapter lists domains and changes nameservers', function () {
@@ -267,6 +268,111 @@ test('porkbun adapter uses paired headers and supported nameserver endpoints', f
     Http::assertSentCount(4);
 });
 
+test('porkbun adapter reports structured provider errors with actionable diagnostics', function () {
+    $account = registrarAccount(RegistrarProvider::Porkbun, RegistrarEnvironment::Production, [
+        'api_key' => 'public-key',
+        'secret_api_key' => 'secret-key',
+    ]);
+    Log::spy();
+    Http::preventStrayRequests();
+    Http::fake([
+        'api.porkbun.com/api/json/v3/domain/listAll*' => Http::response([
+            'status' => 'SUCCESS',
+            'total' => 1,
+            'domains' => [['domain' => 'lgwinesmart-event.com']],
+        ]),
+        'api.porkbun.com/api/json/v3/domain/getNs/*' => Http::response([
+            'status' => 'ERROR',
+            'message' => 'This API key is not allowed to access this domain.',
+            'code' => 'DOMAIN_NOT_ALLOWED',
+            'requestId' => 'request-123',
+            'next_action' => [
+                'type' => 'enable_setting',
+                'hint' => 'Add the domain to this API key allowlist.',
+                'retryable' => false,
+                'url' => 'https://porkbun.com/account/api',
+            ],
+        ], 403, [
+            'Content-Type' => 'application/json',
+            'X-API-Version' => '3.17',
+            'X-Request-Id' => 'request-123',
+        ]),
+    ]);
+
+    $exception = null;
+    try {
+        (new PorkbunRegistrar($account))->listDomains();
+    } catch (ProviderException $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeInstanceOf(ProviderException::class)
+        ->and($exception?->category)->toBe(ErrorCategory::Permission)
+        ->and($exception?->providerCode)->toBe('DOMAIN_NOT_ALLOWED')
+        ->and($exception?->getMessage())->toContain('DOMAIN_NOT_ALLOWED')
+        ->and($exception?->getMessage())->toContain('Add the domain to this API key allowlist.')
+        ->and($exception?->getMessage())->toContain('request-123');
+    Log::shouldHaveReceived('error')->once()->with(
+        'Porkbun API request failed.',
+        Mockery::on(function (array $context) use ($account): bool {
+            $serializedContext = json_encode($context);
+
+            return $context['registrar_account_id'] === $account->id
+                && $context['endpoint'] === '/domain/getNs/lgwinesmart-event.com'
+                && $context['http_status'] === 403
+                && $context['provider_code'] === 'DOMAIN_NOT_ALLOWED'
+                && $context['request_id'] === 'request-123'
+                && $context['next_action_type'] === 'enable_setting'
+                && $context['next_action_retryable'] === false
+                && $context['api_version'] === '3.17'
+                && is_string($serializedContext)
+                && ! str_contains($serializedContext, 'public-key')
+                && ! str_contains($serializedContext, 'secret-key');
+        }),
+    );
+});
+
+test('porkbun adapter logs an excerpt when the provider returns a non-json error', function () {
+    $account = registrarAccount(RegistrarProvider::Porkbun, RegistrarEnvironment::Production, [
+        'api_key' => 'public-key',
+        'secret_api_key' => 'secret-key',
+    ]);
+    Log::spy();
+    Http::preventStrayRequests();
+    Http::fake([
+        'api.porkbun.com/api/json/v3/domain/listAll*' => Http::response([
+            'status' => 'SUCCESS',
+            'total' => 1,
+            'domains' => [['domain' => 'lgwinesmart-event.com']],
+        ]),
+        'api.porkbun.com/api/json/v3/domain/getNs/*' => Http::response(
+            '<html><body>Access denied by upstream security policy. public-key secret-key</body></html>',
+            403,
+            ['Content-Type' => 'text/html', 'X-Request-Id' => 'edge-request-456'],
+        ),
+    ]);
+
+    $exception = null;
+    try {
+        (new PorkbunRegistrar($account))->listDomains();
+    } catch (ProviderException $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeInstanceOf(ProviderException::class)
+        ->and($exception?->category)->toBe(ErrorCategory::Permission)
+        ->and($exception?->providerCode)->toBe('HTTP_403')
+        ->and($exception?->getMessage())->toContain('HTTP 403')
+        ->and($exception?->getMessage())->toContain('non-JSON response')
+        ->and($exception?->getMessage())->toContain('edge-request-456');
+    Log::shouldHaveReceived('error')->once()->with(
+        'Porkbun API request failed.',
+        Mockery::on(fn (array $context): bool => $context['response_format'] === 'non_json'
+            && $context['response_body_excerpt'] === 'Access denied by upstream security policy. [REDACTED] [REDACTED]'
+            && $context['request_id'] === 'edge-request-456'),
+    );
+});
+
 test('spaceship adapter maps embedded nameservers and updates custom hosts', function () {
     $account = registrarAccount(RegistrarProvider::Spaceship, RegistrarEnvironment::Production, [
         'api_key' => 'public-key',
@@ -303,10 +409,14 @@ test('spaceship adapter maps embedded nameservers and updates custom hosts', fun
         && $request['hosts'] === ['ns3.example.com', 'ns4.example.com']);
 });
 
-test('infomaniak adapter syncs inventory and reports unsupported delegation writes', function () {
+test('infomaniak adapter syncs official renewal and lock fields and updates nameservers', function () {
     $account = registrarAccount(RegistrarProvider::Infomaniak, RegistrarEnvironment::Production, ['token' => 'token']);
     Http::preventStrayRequests();
     Http::fake([
+        'api.infomaniak.com/2/domains/domains/example.com/nameservers' => Http::response([
+            'result' => 'success',
+            'data' => true,
+        ]),
         'api.infomaniak.com/2/domains/domains*' => Http::response([
             'result' => 'success',
             'data' => [[
@@ -314,34 +424,42 @@ test('infomaniak adapter syncs inventory and reports unsupported delegation writ
                 'tld' => 'com',
                 'created_at' => 1704067200,
                 'expires_at' => 1798761600,
-                'renewal_price' => ['amount' => '14.90', 'currency' => 'CHF'],
-                'locked' => 'true',
+                'status' => ['ok', 'clientTransferProhibited'],
                 'options' => ['domain_privacy' => 'true', 'renewal_warranty' => 'false'],
             ]],
             'page' => 1,
             'pages' => 2,
         ]),
         'api.infomaniak.com/2/zones/*' => Http::response(['result' => 'success', 'data' => ['nameservers' => ['NS1.EXAMPLE.COM.', 'ns2.example.com']]]),
+        'www.infomaniak.com/api-g/tldprice*' => Http::response([
+            'data' => [
+                'aSellPricesDiscounted' => [
+                    'CHF' => ['fRenewExclTax' => '13.60', 'fRenewInclTax' => '14.70'],
+                ],
+            ],
+        ]),
     ]);
 
     $registrar = new InfomaniakRegistrar($account);
     $page = $registrar->listDomains();
+    $result = $registrar->setNameservers('Example.COM', ['NS3.EXAMPLE.COM.', 'ns4.example.com']);
 
     expect($page->domains[0]->name)->toBe('example.com')
         ->and($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com'])
-        ->and($page->domains[0]->renewalPrice)->toBe(14.9)
+        ->and($page->domains[0]->renewalPrice)->toBe(13.6)
         ->and($page->domains[0]->isLocked)->toBeTrue()
         ->and($page->domains[0]->privacyEnabled)->toBeTrue()
         ->and($page->domains[0]->autoRenew)->toBeFalse()
-        ->and($page->nextPage)->toBe(2);
+        ->and($page->nextPage)->toBe(2)
+        ->and($result->accepted)->toBeTrue();
 
-    try {
-        $registrar->setNameservers('example.com', ['ns3.example.com', 'ns4.example.com']);
-        $this->fail('Expected an unsupported-operation exception.');
-    } catch (ProviderException $exception) {
-        expect($exception->category)->toBe(ErrorCategory::ProviderPermanent)
-            ->and($exception->getMessage())->toContain('does not support');
-    }
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+        && str_contains($request->url(), 'www.infomaniak.com/api-g/tldprice')
+        && $request['country'] === 'CH'
+        && $request['ext'] === 'com');
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
+        && $request->url() === 'https://api.infomaniak.com/2/domains/domains/example.com/nameservers'
+        && $request['nameservers'] === ['ns3.example.com', 'ns4.example.com']);
 });
 
 test('registrar factory resolves all newly supported adapters', function (RegistrarProvider $provider, string $adapter) {

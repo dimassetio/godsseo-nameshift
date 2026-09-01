@@ -15,21 +15,25 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class InfomaniakRegistrar implements Registrar
 {
+    /** @var array<string, float|null> */
+    private array $renewalPrices = [];
+
     public function __construct(private readonly RegistrarAccount $account) {}
 
     public function testConnection(): ConnectionResult
     {
-        $this->request('/2/domains/domains', ['page' => 1]);
+        $this->request('get', '/2/domains/domains', ['page' => 1]);
 
         return new ConnectionResult(true, 'Connection successful.');
     }
 
     public function listDomains(int $page = 1): DomainPage
     {
-        $payload = $this->request('/2/domains/domains', ['page' => $page]);
+        $payload = $this->request('get', '/2/domains/domains', ['page' => $page]);
         $data = $payload['data'] ?? [];
         $records = is_array($data) && isset($data['domains']) ? $data['domains'] : $data;
         $domains = [];
@@ -41,14 +45,15 @@ class InfomaniakRegistrar implements Registrar
             $name = NameserverSet::domain((string) ($record['name'] ?? ''));
             $expiresAt = $this->timestampValue($record['expires_at'] ?? null);
             $options = is_array($record['options'] ?? null) ? $record['options'] : [];
+            $tld = is_string($record['tld'] ?? null) ? strtolower($record['tld']) : NameserverSet::tld($name);
             $domains[] = new RemoteDomain(
                 name: $name,
                 nameservers: $this->getNameservers($name),
                 status: $expiresAt !== null && CarbonImmutable::parse($expiresAt)->isPast() ? 'EXPIRED' : 'ACTIVE',
-                tld: is_string($record['tld'] ?? null) ? strtolower($record['tld']) : NameserverSet::tld($name),
+                tld: $tld,
                 registeredAt: $this->timestampValue($record['created_at'] ?? null),
                 expiresAt: $expiresAt,
-                renewalPrice: $this->renewalPriceFrom($record),
+                renewalPrice: $this->renewalPrice($tld),
                 isLocked: $this->lockedValue($record),
                 privacyEnabled: $this->booleanValue($options['domain_privacy'] ?? null),
                 autoRenew: $this->autoRenewValue($record, $options),
@@ -63,7 +68,7 @@ class InfomaniakRegistrar implements Registrar
 
     public function getNameservers(string $domain): array
     {
-        $payload = $this->request('/2/zones/'.rawurlencode(NameserverSet::domain($domain)));
+        $payload = $this->request('get', '/2/zones/'.rawurlencode(NameserverSet::domain($domain)));
         $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
 
         return NameserverSet::normalize(is_array($data['nameservers'] ?? null) ? $data['nameservers'] : [], false);
@@ -71,22 +76,29 @@ class InfomaniakRegistrar implements Registrar
 
     public function setNameservers(string $domain, array $nameservers): ChangeResult
     {
-        throw new ProviderException(
-            ErrorCategory::ProviderPermanent,
-            'Infomaniak public API does not support changing registrar nameservers.',
+        $payload = $this->request(
+            'put',
+            '/2/domains/domains/'.rawurlencode(NameserverSet::domain($domain)).'/nameservers',
+            ['nameservers' => NameserverSet::normalize($nameservers)],
         );
+
+        return new ChangeResult(($payload['data'] ?? null) === true);
     }
 
     /** @return array<string, mixed> */
-    private function request(string $path, array $query = []): array
+    private function request(string $method, string $path, array $data = []): array
     {
         try {
-            $response = Http::baseUrl('https://api.infomaniak.com')
+            $request = Http::baseUrl('https://api.infomaniak.com')
                 ->withToken($this->account->credentials['token'] ?? '')
                 ->acceptJson()
                 ->connectTimeout(10)
-                ->timeout(30)
-                ->get($path, $query);
+                ->timeout(30);
+            $response = match (strtolower($method)) {
+                'get' => $request->get($path, $data),
+                'put' => $request->put($path, $data),
+                default => throw new ProviderException(ErrorCategory::Validation, 'Unsupported Infomaniak request method.'),
+            };
         } catch (ConnectionException) {
             throw new ProviderException(ErrorCategory::Network, 'Unable to connect to Infomaniak.');
         }
@@ -138,51 +150,57 @@ class InfomaniakRegistrar implements Registrar
         return is_string($value) && trim($value) !== '' ? $value : null;
     }
 
-    /** @param array<string, mixed> $record */
-    private function renewalPriceFrom(array $record): ?float
+    private function renewalPrice(string $tld): ?float
     {
-        foreach (['renewal_price', 'renewalPrice', 'renew_price', 'renewPrice'] as $key) {
-            $price = $this->priceValue($record[$key] ?? null);
-            if ($price !== null) {
-                return $price;
-            }
+        $normalizedTld = ltrim(strtolower(trim($tld)), '.');
+        if (array_key_exists($normalizedTld, $this->renewalPrices)) {
+            return $this->renewalPrices[$normalizedTld];
         }
 
-        foreach (['pricing', 'prices'] as $key) {
-            $price = $this->priceValue($record[$key] ?? null);
-            if ($price !== null) {
-                return $price;
-            }
+        try {
+            $response = Http::baseUrl('https://www.infomaniak.com')
+                ->acceptJson()
+                ->connectTimeout(10)
+                ->timeout(30)
+                ->get('/api-g/tldprice', ['country' => 'CH', 'ext' => $normalizedTld]);
+        } catch (ConnectionException) {
+            throw new ProviderException(ErrorCategory::Network, "Unable to fetch Infomaniak renewal price for .{$normalizedTld}.");
         }
 
-        return null;
-    }
-
-    private function priceValue(mixed $value): ?float
-    {
-        if (is_numeric($value)) {
-            return (float) $value;
-        }
-        if (! is_array($value)) {
-            return null;
+        if (! $response->successful()) {
+            throw new ProviderException(
+                $response->serverError() ? ErrorCategory::ProviderTemporary : ErrorCategory::ProviderPermanent,
+                "Infomaniak renewal price lookup failed for .{$normalizedTld} (HTTP {$response->status()}).",
+                (string) $response->status(),
+            );
         }
 
-        foreach ($value as $price) {
-            if (! is_array($price) || ! in_array(strtolower((string) ($price['operation'] ?? '')), ['renew', 'renewal'], true)) {
+        $prices = $response->json('data.aSellPricesDiscounted') ?? $response->json('data.aSellPrices');
+        if (! is_array($prices)) {
+            Log::warning('Infomaniak renewal price was not present in the pricing response.', [
+                'registrar_account_id' => $this->account->id,
+                'tld' => $normalizedTld,
+            ]);
+
+            return $this->renewalPrices[$normalizedTld] = null;
+        }
+
+        foreach ($prices as $price) {
+            if (! is_array($price)) {
                 continue;
             }
-
-            return $this->priceValue($price['price'] ?? $price['amount'] ?? $price['value'] ?? null);
-        }
-
-        foreach (['renewal_price', 'renewalPrice', 'renew_price', 'renewPrice', 'renewal', 'renew', 'amount', 'price', 'value'] as $key) {
-            $price = $this->priceValue($value[$key] ?? null);
-            if ($price !== null) {
-                return $price;
+            $renewalPrice = $price['fRenewExclTax'] ?? $price['fRenew'] ?? null;
+            if (is_numeric($renewalPrice)) {
+                return $this->renewalPrices[$normalizedTld] = (float) $renewalPrice;
             }
         }
 
-        return null;
+        Log::warning('Infomaniak renewal price contained no numeric renewal value.', [
+            'registrar_account_id' => $this->account->id,
+            'tld' => $normalizedTld,
+        ]);
+
+        return $this->renewalPrices[$normalizedTld] = null;
     }
 
     /** @param array<string, mixed> $record */
@@ -194,12 +212,24 @@ class InfomaniakRegistrar implements Registrar
             }
         }
 
-        $statuses = $record['epp_statuses'] ?? $record['eppStatuses'] ?? null;
+        $statuses = $record['status'] ?? $record['epp_statuses'] ?? $record['eppStatuses'] ?? null;
         if (! is_array($statuses)) {
             return null;
         }
 
-        return in_array('clientTransferProhibited', $statuses, true);
+        foreach ($statuses as $status) {
+            if (is_array($status)) {
+                $status = $status['status'] ?? $status['code'] ?? $status['name'] ?? $status['value'] ?? null;
+            }
+            if (! is_string($status)) {
+                continue;
+            }
+            if (in_array(strtolower($status), ['clienttransferprohibited', 'servertransferprohibited'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
