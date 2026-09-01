@@ -268,6 +268,45 @@ test('porkbun adapter uses paired headers and supported nameserver endpoints', f
     Http::assertSentCount(4);
 });
 
+test('porkbun adapter recovers from an HTTP 503 nameserver lookup by retrying the domain', function () {
+    $account = registrarAccount(RegistrarProvider::Porkbun, RegistrarEnvironment::Production, [
+        'api_key' => 'public-key',
+        'secret_api_key' => 'secret-key',
+    ]);
+    Sleep::fake();
+    Log::spy();
+    Http::preventStrayRequests();
+    Http::fake([
+        'api.porkbun.com/api/json/v3/domain/listAll*' => Http::response([
+            'status' => 'SUCCESS',
+            'total' => 1,
+            'domains' => [['domain' => 'fastcredit24.com']],
+        ]),
+        'api.porkbun.com/api/json/v3/domain/getNs/*' => Http::sequence()
+            ->push('<html><body>Service temporarily unavailable.</body></html>', 503, [
+                'Content-Type' => 'text/html',
+                'X-Request-Id' => 'edge-request-503',
+            ])
+            ->push(['status' => 'SUCCESS', 'ns' => ['ns1.example.com', 'ns2.example.com']]),
+    ]);
+
+    $page = (new PorkbunRegistrar($account))->listDomains();
+
+    expect($page->domains[0]->nameservers)->toBe(['ns1.example.com', 'ns2.example.com']);
+    Sleep::assertSequence([Sleep::for(1)->second()]);
+    Http::assertSentCount(3);
+    Log::shouldHaveReceived('warning')->once()->with(
+        'Retrying temporary Porkbun nameserver lookup failure.',
+        Mockery::on(fn (array $context): bool => $context['domain'] === 'fastcredit24.com'
+            && $context['attempt'] === 1
+            && $context['next_attempt'] === 2
+            && $context['retry_delay_seconds'] === 1
+            && $context['http_status'] === 503
+            && $context['request_id'] === 'edge-request-503'
+            && $context['response_body_excerpt'] === 'Service temporarily unavailable.'),
+    );
+});
+
 test('porkbun adapter reports structured provider errors with actionable diagnostics', function () {
     $account = registrarAccount(RegistrarProvider::Porkbun, RegistrarEnvironment::Production, [
         'api_key' => 'public-key',

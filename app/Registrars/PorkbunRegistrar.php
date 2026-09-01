@@ -17,6 +17,7 @@ use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Sleep;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -27,6 +28,10 @@ class PorkbunRegistrar implements Registrar
     private const NAMESERVER_CONCURRENCY = 5;
 
     private const NAMESERVER_BATCH_SIZE = 100;
+
+    private const NAMESERVER_MAX_ATTEMPTS = 3;
+
+    private const NAMESERVER_RETRY_DELAYS = [1, 3];
 
     public function __construct(private readonly RegistrarAccount $account) {}
 
@@ -121,16 +126,7 @@ class PorkbunRegistrar implements Registrar
         $nameservers = [];
 
         foreach (array_chunk($domains, self::NAMESERVER_BATCH_SIZE) as $domainBatch) {
-            $responses = Http::pool(fn (Pool $pool): array => array_map(
-                fn (string $domain) => $pool
-                    ->as($domain)
-                    ->withHeaders($this->authenticationHeaders())
-                    ->acceptJson()
-                    ->connectTimeout(10)
-                    ->timeout(30)
-                    ->get('https://api.porkbun.com/api/json/v3/domain/getNs/'.rawurlencode($domain)),
-                $domainBatch,
-            ), self::NAMESERVER_CONCURRENCY);
+            $responses = $this->nameserverResponses($domainBatch);
 
             foreach ($domainBatch as $domain) {
                 $response = $responses[$domain] ?? null;
@@ -157,6 +153,74 @@ class PorkbunRegistrar implements Registrar
         }
 
         return $nameservers;
+    }
+
+    /**
+     * @param  list<string>  $domains
+     * @return array<string, Response|Throwable>
+     */
+    private function nameserverResponses(array $domains): array
+    {
+        $completedResponses = [];
+        $pendingDomains = $domains;
+
+        for ($attempt = 1; $attempt <= self::NAMESERVER_MAX_ATTEMPTS && $pendingDomains !== []; $attempt++) {
+            $responses = Http::pool(fn (Pool $pool): array => array_map(
+                fn (string $domain) => $pool
+                    ->as($domain)
+                    ->withHeaders($this->authenticationHeaders())
+                    ->acceptJson()
+                    ->connectTimeout(10)
+                    ->timeout(30)
+                    ->get('https://api.porkbun.com/api/json/v3/domain/getNs/'.rawurlencode($domain)),
+                $pendingDomains,
+            ), self::NAMESERVER_CONCURRENCY);
+            $retryDomains = [];
+
+            foreach ($pendingDomains as $domain) {
+                $response = $responses[$domain] ?? null;
+                if ($attempt < self::NAMESERVER_MAX_ATTEMPTS && $this->isTemporaryNameserverFailure($response)) {
+                    $retryDomains[] = $domain;
+                    $this->logNameserverRetry($domain, $response, $attempt, self::NAMESERVER_RETRY_DELAYS[$attempt - 1]);
+
+                    continue;
+                }
+
+                $completedResponses[$domain] = $response instanceof Response || $response instanceof Throwable
+                    ? $response
+                    : new ProviderException(ErrorCategory::ProviderTemporary, "Porkbun returned no nameserver response for {$domain}.");
+            }
+
+            if ($retryDomains !== []) {
+                Sleep::for(self::NAMESERVER_RETRY_DELAYS[$attempt - 1])->seconds();
+            }
+
+            $pendingDomains = $retryDomains;
+        }
+
+        return $completedResponses;
+    }
+
+    private function isTemporaryNameserverFailure(mixed $response): bool
+    {
+        return $response instanceof Throwable
+            || ($response instanceof Response && ($response->status() === 429 || $response->serverError()));
+    }
+
+    private function logNameserverRetry(string $domain, mixed $response, int $attempt, int $delay): void
+    {
+        Log::warning('Retrying temporary Porkbun nameserver lookup failure.', [
+            'registrar_account_id' => $this->account->getKey(),
+            'domain' => $domain,
+            'attempt' => $attempt,
+            'next_attempt' => $attempt + 1,
+            'retry_delay_seconds' => $delay,
+            'http_status' => $response instanceof Response ? $response->status() : null,
+            'request_id' => $response instanceof Response ? $this->stringValue($response->header('X-Request-Id')) : null,
+            'content_type' => $response instanceof Response ? $this->stringValue($response->header('Content-Type')) : null,
+            'response_body_excerpt' => $response instanceof Response ? $this->responseExcerpt($response) : null,
+            'exception' => $response instanceof Throwable ? $response::class : null,
+        ]);
     }
 
     /** @return array<string, mixed> */
