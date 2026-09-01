@@ -140,3 +140,54 @@ test('uses an allowed domain page size and rejects unsafe table parameters', fun
         ->assertRedirect('/domains')
         ->assertSessionHasErrors(['sort', 'direction', 'per_page']);
 });
+
+test('downloads every filtered domain asset with all table columns regardless of pagination', function () {
+    $account = RegistrarAccount::create([
+        'provider' => RegistrarProvider::NameCom,
+        'environment' => RegistrarEnvironment::Sandbox,
+        'label' => 'Asset Registrar',
+        'username' => 'asset-user',
+        'credentials' => ['token' => 'token'],
+        'is_active' => true,
+    ]);
+    foreach (range(1, 105) as $number) {
+        Domain::create([
+            'registrar_account_id' => $account->id,
+            'name' => "asset-{$number}.example.com",
+            'tld' => 'com',
+            'renewal_price' => 12.34,
+            'registered_at' => '2025-01-01',
+            'expires_at' => '2027-01-01',
+            'remote_status' => 'ACTIVE',
+            'is_locked' => true,
+            'privacy_enabled' => false,
+            'auto_renew' => true,
+            'nameservers' => ['ns1.example.com', 'ns2.example.com'],
+            'inventory_status' => InventoryStatus::Available,
+        ]);
+    }
+    Domain::create([
+        'registrar_account_id' => $account->id,
+        'name' => 'excluded.example.com',
+        'nameservers' => [],
+        'remote_status' => 'EXPIRED',
+        'inventory_status' => InventoryStatus::Available,
+    ]);
+
+    $response = $this->actingAs(User::factory()->create())->get('/domains/export?status=ACTIVE&per_page=25');
+
+    $response->assertOk()->assertDownload('nameshift-domain-assets.xlsx');
+    $path = tempnam(sys_get_temp_dir(), 'domain-assets-test-');
+    file_put_contents($path, $response->getContent());
+    $zip = new ZipArchive;
+    $zip->open($path);
+    $sheet = $zip->getFromName('xl/worksheets/sheet1.xml');
+    $zip->close();
+    unlink($path);
+
+    expect(substr_count($sheet, '<row r="'))->toBe(106)
+        ->and($sheet)->toContain('Domain', 'TLD', 'Registrar', 'Renewal Price', 'Registered At', 'Expires At', 'Remaining Days')
+        ->and($sheet)->toContain('Registrar Status', 'Locked', 'Privacy', 'Auto Renew', 'Nameserver 1', 'Nameserver 2')
+        ->and($sheet)->toContain('asset-105.example.com')
+        ->and($sheet)->not->toContain('excluded.example.com');
+});

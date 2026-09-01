@@ -13,6 +13,7 @@ Route::redirect('/', '/dashboard')->name('home');
 Route::middleware(['auth'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
     Route::get('domains', [DomainController::class, 'index'])->name('domains.index');
+    Route::get('domains/export', [DomainController::class, 'export'])->name('domains.export');
     Route::get('domains/{domain}/mutation-status', [DomainController::class, 'mutationStatus'])->name('domains.mutation-status');
     Route::post('domains/{domain}/nameservers', [BulkChangeController::class, 'single'])->name('domains.nameservers.update');
 

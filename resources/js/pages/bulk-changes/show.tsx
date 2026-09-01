@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import AppLayout from '@/layouts/app-layout';
 import { type BulkChange, type BulkChangeItem, type Paginated } from '@/types';
-import { Head, router } from '@inertiajs/react';
+import { Head, router, usePoll } from '@inertiajs/react';
+import { CheckCircle2, Clock3, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export default function BulkDetail({
@@ -24,11 +25,32 @@ export default function BulkDetail({
 }) {
     const [confirming, setConfirming] = useState(false);
     const [rollbackIds, setRollbackIds] = useState<number[]>([]);
+    const [refreshing, setRefreshing] = useState(false);
+    const [lastUpdatedAt, setLastUpdatedAt] = useState(() => new Date());
+    const { start: startPolling, stop: stopPolling } = usePoll(
+        2000,
+        {
+            only: ['bulkChange', 'items', 'isTerminal'],
+            onStart: () => setRefreshing(true),
+            onFinish: () => {
+                setRefreshing(false);
+                setLastUpdatedAt(new Date());
+            },
+        },
+        { autoStart: false, keepAlive: true },
+    );
+
     useEffect(() => {
-        if (bulkChange.status === 'DRAFT' || isTerminal) return;
-        const timer = window.setInterval(() => router.reload({ only: ['bulkChange', 'items', 'isTerminal'] }), 5000);
-        return () => window.clearInterval(timer);
-    }, [bulkChange.status, isTerminal]);
+        if (bulkChange.status === 'DRAFT' || isTerminal) {
+            stopPolling();
+
+            return;
+        }
+
+        startPolling();
+
+        return stopPolling;
+    }, [bulkChange.status, isTerminal, startPolling, stopPolling]);
     const confirm = () =>
         router.post(
             `/bulk-changes/${bulkChange.id}/confirm`,
@@ -75,13 +97,18 @@ export default function BulkDetail({
                 {bulkChange.status === 'DRAFT' ? (
                     <PreviewSummary counts={previewCounts} />
                 ) : (
-                    <>
-                        <div className="bg-muted h-2 overflow-hidden rounded-full">
-                            <div className="bg-primary h-full transition-all" style={{ width: `${progress}%` }} />
-                        </div>
+                    <div className="space-y-4">
+                        <ProgressOverview
+                            bulkChange={bulkChange}
+                            done={done}
+                            progress={progress}
+                            isTerminal={isTerminal}
+                            refreshing={refreshing}
+                            lastUpdatedAt={lastUpdatedAt}
+                        />
                         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
                             <Count label="Total" value={bulkChange.total_count} />
-                            <Count label="Pending" value={bulkChange.pending_count} />
+                            <Count label="Pending / retrying" value={bulkChange.pending_count} />
                             <Count label="Processing" value={bulkChange.processing_count} />
                             <Count label="Succeeded" value={bulkChange.succeeded_count} />
                             <Count label="Failed" value={bulkChange.failed_count} />
@@ -89,7 +116,7 @@ export default function BulkDetail({
                             <Count label="Conflicts" value={bulkChange.conflict_count} />
                             <Count label="Cancelled" value={bulkChange.cancelled_count} />
                         </div>
-                    </>
+                    </div>
                 )}
                 <Card>
                     <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -204,6 +231,87 @@ export default function BulkDetail({
                 )}
             </div>
         </AppLayout>
+    );
+}
+
+function ProgressOverview({
+    bulkChange,
+    done,
+    progress,
+    isTerminal,
+    refreshing,
+    lastUpdatedAt,
+}: {
+    bulkChange: BulkChange;
+    done: number;
+    progress: number;
+    isTerminal: boolean;
+    refreshing: boolean;
+    lastUpdatedAt: Date;
+}) {
+    const remaining = Math.max(bulkChange.total_count - done, 0);
+    const waitingToStart = bulkChange.status === 'QUEUED' && done === 0 && bulkChange.processing_count === 0;
+    const statusMessage = isTerminal ? 'Bulk update complete' : waitingToStart ? 'Waiting for a queue worker' : 'Bulk update is running';
+
+    return (
+        <Card className={isTerminal ? 'border-emerald-500/30' : 'border-primary/30 bg-primary/5'} aria-live="polite">
+            <CardContent className="space-y-5 p-5 sm:p-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <div
+                            className={
+                                isTerminal
+                                    ? 'rounded-full bg-emerald-500/10 p-2 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-primary/10 text-primary rounded-full p-2'
+                            }
+                        >
+                            {isTerminal ? <CheckCircle2 className="size-5" /> : <LoaderCircle className="size-5 animate-spin" />}
+                        </div>
+                        <div className="min-w-0">
+                            <div className="font-medium">{statusMessage}</div>
+                            <p className="text-muted-foreground mt-1 text-sm">
+                                {done.toLocaleString()} of {bulkChange.total_count.toLocaleString()} domains processed · {remaining.toLocaleString()}{' '}
+                                remaining
+                            </p>
+                        </div>
+                    </div>
+                    {!isTerminal && (
+                        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+                            <RefreshCw className={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                            {refreshing ? 'Refreshing status…' : `Updated ${lastUpdatedAt.toLocaleTimeString()}`}
+                        </div>
+                    )}
+                </div>
+
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-medium">Overall progress</span>
+                        <span className="font-semibold tabular-nums">{progress}%</span>
+                    </div>
+                    <div
+                        className="bg-muted h-3 overflow-hidden rounded-full"
+                        role="progressbar"
+                        aria-label="Bulk update progress"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={progress}
+                    >
+                        <div className="bg-primary h-full rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
+                    </div>
+                </div>
+
+                {!isTerminal && (
+                    <div className="text-muted-foreground flex flex-wrap gap-x-5 gap-y-2 text-xs">
+                        <span className="flex items-center gap-1.5">
+                            <LoaderCircle className="size-3.5 animate-spin" /> {bulkChange.processing_count.toLocaleString()} processing now
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                            <Clock3 className="size-3.5" /> {bulkChange.pending_count.toLocaleString()} queued or retrying
+                        </span>
+                    </div>
+                )}
+            </CardContent>
+        </Card>
     );
 }
 

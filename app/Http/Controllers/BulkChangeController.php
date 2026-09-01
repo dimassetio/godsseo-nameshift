@@ -35,7 +35,6 @@ class BulkChangeController extends Controller
         $records = Domain::query()
             ->matchingInventoryFilters($request->validated())
             ->orderBy('name')
-            ->limit(100)
             ->get(['name', 'nameservers'])
             ->map(fn (Domain $domain): array => [
                 'domain' => $domain->name,
@@ -66,7 +65,9 @@ class BulkChangeController extends Controller
         $missing = $recordByDomain->keys()->diff($domains->keys())->values();
         if ($missing->isNotEmpty()) {
             throw ValidationException::withMessages([
-                'file' => 'These domains are not in the synchronized inventory: '.$missing->take(5)->implode(', ').($missing->count() > 5 ? ', …' : ''),
+                'file' => $missing
+                    ->map(fn (string $domain): string => "Domain {$domain}: not found in the synchronized inventory.")
+                    ->implode(' '),
             ]);
         }
 
@@ -250,11 +251,37 @@ class BulkChangeController extends Controller
                 $domainTarget = $normalizedTargets->get($domain->id);
                 $blocked = ! $domain->account->is_active || $domain->inventory_status !== InventoryStatus::Available || in_array($domain->id, $reserved, true);
                 $disposition = $blocked ? PreviewDisposition::Blocked : (NameserverSet::equal($domain->nameservers, $domainTarget) ? PreviewDisposition::WillSkip : PreviewDisposition::Change);
-                $bulk->items()->create(['domain_id' => $domain->id, 'preview_disposition' => $disposition, 'preview_nameservers' => $domain->nameservers, 'target_nameservers' => $domainTarget]);
+                [$errorCategory, $errorMessage] = $this->previewError($domain, $reserved);
+                $bulk->items()->create([
+                    'domain_id' => $domain->id,
+                    'preview_disposition' => $disposition,
+                    'preview_nameservers' => $domain->nameservers,
+                    'target_nameservers' => $domainTarget,
+                    'error_category' => $errorCategory,
+                    'error_message' => $errorMessage,
+                ]);
             }
             Audit::record('bulk_change.preview_created', $bulk, ['type' => $type->value, 'domain_count' => $domains->count()]);
 
             return $bulk;
         });
+    }
+
+    /** @param list<int> $reserved */
+    private function previewError(Domain $domain, array $reserved): array
+    {
+        if (! $domain->account->is_active) {
+            return [ErrorCategory::Permission, "Domain {$domain->name}: registrar account {$domain->account->label} is inactive."];
+        }
+
+        if ($domain->inventory_status !== InventoryStatus::Available) {
+            return [ErrorCategory::ActionRequired, "Domain {$domain->name}: inventory status is {$domain->inventory_status->value}."];
+        }
+
+        if (in_array($domain->id, $reserved, true)) {
+            return [ErrorCategory::Conflict, "Domain {$domain->name}: another nameserver update is already active."];
+        }
+
+        return [null, null];
     }
 }

@@ -97,6 +97,19 @@ test('an exhausted queue job records a visible terminal error', function () {
         ->and(DomainMutationReservation::count())->toBe(0);
 });
 
+test('an unexpected processing error identifies the domain and concrete cause', function () {
+    ['domain' => $domain, 'item' => $item] = pendingMutation();
+    $factory = Mockery::mock(RegistrarFactory::class);
+    $factory->shouldReceive('for')->once()->andThrow(new RuntimeException('Browser session could not start.'));
+
+    (new ProcessBulkChangeItem($item->id))->handle($factory, new BulkChangeStatusService);
+
+    expect($item->fresh()->status)->toBe(BulkItemStatus::Failed)
+        ->and($item->fresh()->error_category)->toBe(ErrorCategory::Unknown)
+        ->and($item->fresh()->error_message)->toBe("Domain {$domain->name}: Browser session could not start.")
+        ->and(DomainMutationReservation::count())->toBe(0);
+});
+
 test('a queued mutation exits when its registrar account was permanently deleted', function () {
     ['domain' => $domain, 'bulk' => $bulk, 'item' => $item] = pendingMutation();
     $account = $domain->account;

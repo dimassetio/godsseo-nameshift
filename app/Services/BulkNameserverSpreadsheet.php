@@ -47,15 +47,22 @@ final class BulkNameserverSpreadsheet
                     $domain = NameserverSet::domain($domainValue);
                     $nameservers = NameserverSet::normalize([$ns1, $ns2]);
                 } catch (\Throwable $exception) {
-                    throw ValidationException::withMessages(['file' => "Invalid data on Excel row {$excelRow}: {$exception->getMessage()}"]);
+                    $domainLabel = $domainValue !== '' ? $domainValue : '[empty domain]';
+                    throw ValidationException::withMessages([
+                        'file' => "Excel row {$excelRow} ({$domainLabel}): {$exception->getMessage()}",
+                    ]);
                 }
                 if (isset($seen[$domain])) {
-                    throw ValidationException::withMessages(['file' => "Domain {$domain} appears more than once in the workbook."]);
+                    throw ValidationException::withMessages([
+                        'file' => "Excel row {$excelRow} ({$domain}): duplicate of Excel row {$seen[$domain]}.",
+                    ]);
                 }
-                $seen[$domain] = true;
+                $seen[$domain] = $excelRow;
                 $records[] = ['domain' => $domain, 'nameservers' => $nameservers];
                 if (count($records) > 100) {
-                    throw ValidationException::withMessages(['file' => 'A bulk change is limited to 100 domains.']);
+                    throw ValidationException::withMessages([
+                        'file' => "Excel row {$excelRow} ({$domain}): a bulk change is limited to 100 domains per upload.",
+                    ]);
                 }
             }
 
@@ -72,6 +79,17 @@ final class BulkNameserverSpreadsheet
     /** @param list<array{domain: string, nameservers: list<string>}> $records */
     public function template(array $records = []): string
     {
+        return $this->workbookFile($this->dataSheet($records), $this->instructionsSheet(), 'Bulk Update');
+    }
+
+    /** @param list<array<string, bool|int|string|null>> $records */
+    public function domainAssets(array $records): string
+    {
+        return $this->workbookFile($this->domainAssetsSheet($records), $this->domainAssetsInstructionsSheet(), 'Domain Assets');
+    }
+
+    private function workbookFile(string $dataSheet, string $instructionsSheet, string $dataSheetName): string
+    {
         $path = tempnam(sys_get_temp_dir(), 'nameshift-xlsx-');
         if ($path === false) {
             throw new \RuntimeException('Unable to create the Excel template.');
@@ -87,11 +105,11 @@ final class BulkNameserverSpreadsheet
             '_rels/.rels' => $this->rootRelationships(),
             'docProps/app.xml' => $this->appProperties(),
             'docProps/core.xml' => $this->coreProperties(),
-            'xl/workbook.xml' => $this->workbook(),
+            'xl/workbook.xml' => $this->workbook($dataSheetName),
             'xl/_rels/workbook.xml.rels' => $this->workbookRelationships(),
             'xl/styles.xml' => $this->styles(),
-            'xl/worksheets/sheet1.xml' => $this->dataSheet($records),
-            'xl/worksheets/sheet2.xml' => $this->instructionsSheet(),
+            'xl/worksheets/sheet1.xml' => $dataSheet,
+            'xl/worksheets/sheet2.xml' => $instructionsSheet,
         ];
         foreach ($files as $name => $contents) {
             $zip->addFromString($name, str_replace('\\"', '"', $contents));
@@ -201,9 +219,9 @@ final class BulkNameserverSpreadsheet
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>';
     }
 
-    private function workbook(): string
+    private function workbook(string $dataSheetName): string
     {
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Bulk Update" sheetId="1" r:id="rId1"/><sheet name="Instructions" sheetId="2" r:id="rId2"/></sheets></workbook>';
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="'.htmlspecialchars($dataSheetName, ENT_QUOTES | ENT_XML1, 'UTF-8').'" sheetId="1" r:id="rId1"/><sheet name="Instructions" sheetId="2" r:id="rId2"/></sheets></workbook>';
     }
 
     private function workbookRelationships(): string
@@ -231,17 +249,73 @@ final class BulkNameserverSpreadsheet
                 .'</row>';
         }
 
-        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C101"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="34" customWidth="1"/></cols><sheetData>'.$rows.'</sheetData><autoFilter ref="A1:C101"/></worksheet>';
+        $lastRow = count($records) + 1;
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C'.$lastRow.'"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="34" customWidth="1"/></cols><sheetData>'.$rows.'</sheetData><autoFilter ref="A1:C'.$lastRow.'"/></worksheet>';
     }
 
-    private function inlineStringCell(string $reference, string $value): string
+    /** @param list<array<string, bool|int|string|null>> $records */
+    private function domainAssetsSheet(array $records): string
     {
-        return '<c r="'.$reference.'" t="inlineStr"><is><t>'.htmlspecialchars($value, ENT_QUOTES | ENT_XML1, 'UTF-8').'</t></is></c>';
+        $headers = [
+            'Domain', 'TLD', 'Registrar', 'Renewal Price', 'Registered At', 'Expires At', 'Remaining Days',
+            'Registrar Status', 'Locked', 'Privacy', 'Auto Renew', 'Nameserver 1', 'Nameserver 2',
+        ];
+        $keys = [
+            'domain', 'tld', 'registrar', 'renewal_price', 'registered_at', 'expires_at', 'remaining_days',
+            'status', 'is_locked', 'privacy_enabled', 'auto_renew', 'nameserver_1', 'nameserver_2',
+        ];
+        $rows = '<row r="1" ht="24" customHeight="1">';
+        foreach ($headers as $index => $header) {
+            $rows .= $this->inlineStringCell($this->columnName($index + 1).'1', $header, 1);
+        }
+        $rows .= '</row>';
+
+        foreach ($records as $index => $record) {
+            $rowNumber = $index + 2;
+            $rows .= '<row r="'.$rowNumber.'">';
+            foreach ($keys as $columnIndex => $key) {
+                $value = $record[$key] ?? null;
+                if (is_bool($value)) {
+                    $value = $value ? 'Yes' : 'No';
+                }
+                $rows .= $this->inlineStringCell($this->columnName($columnIndex + 1).$rowNumber, (string) ($value ?? ''));
+            }
+            $rows .= '</row>';
+        }
+
+        $lastRow = count($records) + 1;
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:M'.$lastRow.'"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="3" width="28" customWidth="1"/><col min="4" max="11" width="18" customWidth="1"/><col min="12" max="13" width="34" customWidth="1"/></cols><sheetData>'.$rows.'</sheetData><autoFilter ref="A1:M'.$lastRow.'"/></worksheet>';
+    }
+
+    private function inlineStringCell(string $reference, string $value, int $style = 0): string
+    {
+        $styleAttribute = $style > 0 ? ' s="'.$style.'"' : '';
+
+        return '<c r="'.$reference.'"'.$styleAttribute.' t="inlineStr"><is><t>'.htmlspecialchars($value, ENT_QUOTES | ENT_XML1, 'UTF-8').'</t></is></c>';
+    }
+
+    private function columnName(int $number): string
+    {
+        $name = '';
+        while ($number > 0) {
+            $number--;
+            $name = chr(65 + ($number % 26)).$name;
+            $number = intdiv($number, 26);
+        }
+
+        return $name;
     }
 
     private function instructionsSheet(): string
     {
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="100" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>How to use this template</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>1. Enter one managed domain per row in the Bulk Update sheet.</t></is></c></row><row r="4"><c r="A4" t="inlineStr"><is><t>2. Fill nameserver1 and nameserver2. Do not rename or remove the headers.</t></is></c></row><row r="5"><c r="A5" t="inlineStr"><is><t>3. Only domains listed in the file will be included. Maximum 100 domains.</t></is></c></row><row r="6"><c r="A6" t="inlineStr"><is><t>4. Upload the completed .xlsx file in Nameshift and review before confirming.</t></is></c></row></sheetData></worksheet>';
+    }
+
+    private function domainAssetsInstructionsSheet(): string
+    {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="100" customWidth="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>Domain asset export</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>This workbook contains every domain matching the filters active when it was downloaded.</t></is></c></row></sheetData></worksheet>';
     }
 
     private function appProperties(): string

@@ -115,7 +115,8 @@ class ProcessBulkChangeItem implements ShouldQueue
             $this->terminal($item, BulkItemStatus::Failed, $statuses, $exception->category, $exception->getMessage(), null, true, $exception->providerCode);
         } catch (Throwable $exception) {
             report($exception);
-            $this->terminal($item, BulkItemStatus::Failed, $statuses, ErrorCategory::Unknown, 'Unexpected provider processing error.');
+            $message = mb_substr("Domain {$item->domain->name}: {$exception->getMessage()}", 0, 500);
+            $this->terminal($item, BulkItemStatus::Failed, $statuses, ErrorCategory::Unknown, $message);
         }
     }
 

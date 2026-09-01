@@ -110,6 +110,8 @@ export default function Domains({
 
         router.get('/domains', { ...filters, search, sort: column, direction }, { preserveScroll: true, preserveState: true });
     };
+    const exportParameters = domainFilterParameters({ ...filters, search });
+    const exportUrl = `/domains/export${exportParameters.size ? `?${exportParameters.toString()}` : ''}`;
 
     return (
         <AppLayout breadcrumbs={[{ title: 'Domains', href: '/domains' }]}>
@@ -163,8 +165,13 @@ export default function Domains({
                 </Card>
 
                 <Card>
-                    <CardHeader>
+                    <CardHeader className="flex flex-row items-center justify-between gap-3">
                         <CardTitle>{domains.total.toLocaleString()} domains</CardTitle>
+                        <Button asChild variant="outline">
+                            <a href={exportUrl}>
+                                <Download className="mr-2 size-4" /> Download asset
+                            </a>
+                        </Button>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="relative w-full max-w-full overflow-x-auto overscroll-x-contain">
@@ -293,11 +300,7 @@ export default function Domains({
 function BulkUpload({ filters }: { filters: DomainFilters }) {
     const form = useForm<{ file: File | null }>({ file: null });
     const inputRef = useRef<HTMLInputElement>(null);
-    const templateParameters = new URLSearchParams();
-
-    if (filters.search) templateParameters.set('search', filters.search);
-    if (filters.account) templateParameters.set('account', String(filters.account));
-    if (filters.status) templateParameters.set('status', filters.status);
+    const templateParameters = domainFilterParameters(filters);
 
     const templateUrl = `/bulk-changes/template${templateParameters.size ? `?${templateParameters.toString()}` : ''}`;
     const submit = (event: FormEvent) => {
@@ -318,7 +321,7 @@ function BulkUpload({ filters }: { filters: DomainFilters }) {
             </CardHeader>
             <CardContent className="space-y-4">
                 <p className="text-muted-foreground text-sm">
-                    The template includes up to 100 domains matching the active filters, with their current nameservers.
+                    The template includes all domains matching the active filters, with their current nameservers.
                 </p>
                 <Button asChild variant="outline">
                     <a href={templateUrl}>
@@ -613,4 +616,16 @@ function NameserverPanel({ label, nameservers, highlighted = false }: { label: s
 
 function clean(value: string): string {
     return value.trim().toLowerCase().replace(/\.$/, '');
+}
+
+function domainFilterParameters(filters: DomainFilters): URLSearchParams {
+    const parameters = new URLSearchParams();
+
+    if (filters.search) parameters.set('search', filters.search);
+    if (filters.account) parameters.set('account', String(filters.account));
+    if (filters.status) parameters.set('status', filters.status);
+    if (filters.sort) parameters.set('sort', filters.sort);
+    if (filters.direction) parameters.set('direction', filters.direction);
+
+    return parameters;
 }
